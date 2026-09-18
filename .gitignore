@@ -1,6 +1,7 @@
 # Markdown - ignore all, keep only README and tracked runtime assets
 docs/
 *.md
+*.exe
 !README.md
 
 # Python
@@ -8,6 +9,10 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 htmlcov/
+
+# TOML - ignore all except pyproject.toml
+*.toml
+!pyproject.toml
 
 # Ignore all dotfiles and dot-directories by default
 .*
@@ -21,5 +26,10 @@ htmlcov/
 # Runtime data (learned conventions, caches, session-sharded convention files)
 data/
 data/conventions/
+
+# Pipeline runtime artifacts (dlt filesystem/DuckDB output, local secrets)
+out/
+*.duckdb
+*.duckdb.wal
 
 

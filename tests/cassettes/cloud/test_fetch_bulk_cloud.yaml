@@ -1,0 +1,22 @@
+interactions:
+- request:
+    body: '{"issueIdsOrKeys": ["10001", "10002"]}'
+    headers:
+      Content-Type:
+      - application/json
+    method: POST
+    uri: https://example.atlassian.net/rest/api/3/changelog/bulkfetch
+  response:
+    body:
+      # Hand-authored, not recorded from live traffic — no Cloud tenant is
+      # available yet. Shape matches Atlassian's documented bulkfetch
+      # response. Replace with a real recording once Cloud credentials are
+      # available.
+      string: '{"issueChangeLogs":[{"issueId":"10001","changeHistories":[{"id":"9001","author":{"accountId":"abc","displayName":"Alice"},"created":"2026-01-01T00:00:00.000+0000","items":[{"field":"status","fieldId":"status","fieldtype":"jira","from":"1","fromString":"To Do","to":"3","toString":"Done"}]}]},{"issueId":"10002","changeHistories":[]}]}'
+    headers:
+      Content-Type:
+      - application/json;charset=UTF-8
+    status:
+      code: 200
+      message: ''
+version: 1

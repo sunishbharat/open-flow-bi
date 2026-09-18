@@ -1,0 +1,27 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - dlt/1.30.0
+    method: GET
+    uri: https://example.atlassian.net/rest/api/2/field
+  response:
+    body:
+      # Hand-authored, not recorded from live traffic — no Cloud tenant is
+      # available yet. Shape matches Atlassian's documented /field response.
+      # Replace with a real recording once Cloud credentials are available.
+      string: '[{"id":"summary","name":"Summary","custom":false,"orderable":true,"navigable":true,"searchable":true,"clauseNames":["summary"],"schema":{"type":"string","system":"summary"}},{"id":"customfield_10032","name":"Story Points","custom":true,"orderable":true,"navigable":true,"searchable":true,"clauseNames":["cf[10032]","Story Points"],"schema":{"type":"number","custom":"com.pyxis.greenhopper.jira:gh-story-points","customId":10032}}]'
+    headers:
+      Content-Type:
+      - application/json;charset=UTF-8
+    status:
+      code: 200
+      message: ''
+version: 1

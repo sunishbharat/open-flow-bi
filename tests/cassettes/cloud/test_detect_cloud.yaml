@@ -1,0 +1,28 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - dlt/1.30.0
+    method: GET
+    uri: https://example.atlassian.net/rest/api/2/serverInfo
+  response:
+    body:
+      # Hand-authored, not recorded from live traffic — no Cloud tenant is
+      # available yet. Shape matches Atlassian's documented /serverInfo
+      # response (deploymentType: "Cloud"). Replace with a real recording
+      # once Cloud credentials are available.
+      string: '{"baseUrl":"https://example.atlassian.net","version":"1001.0.0","versionNumbers":[1001,0,0],"deploymentType":"Cloud","buildNumber":100177,"buildDate":"2026-01-01T00:00:00.000+0000","serverTime":"2026-01-01T00:00:00.000+00:00","scmInfo":"unknown","serverTitle":"Jira"}'
+    headers:
+      Content-Type:
+      - application/json;charset=UTF-8
+    status:
+      code: 200
+      message: ''
+version: 1

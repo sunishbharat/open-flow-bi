@@ -1,0 +1,60 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - dlt/1.30.0
+    method: GET
+    uri: https://issues.apache.org/jira/rest/api/2/issue/KAFKA-1/changelog?startAt=0&maxResults=100
+  response:
+    body:
+      string: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><status><status-code>404</status-code><message>null
+        for uri: https://issues.apache.org/jira/rest/api/2/issue/KAFKA-1/changelog?startAt=0&amp;maxResults=100</message></status>'
+    headers:
+      Cache-Control:
+      - no-transform
+      Connection:
+      - Keep-Alive
+      Content-Length:
+      - '229'
+      Content-Security-Policy:
+      - sandbox
+      Content-Type:
+      - application/xml;charset=UTF-8
+      Date:
+      - Fri, 18 Sep 2026 12:20:03 GMT
+      Keep-Alive:
+      - timeout=3, max=100
+      Referrer-Policy:
+      - strict-origin-when-cross-origin
+      Server:
+      - Apache
+      Set-Cookie:
+      - atlassian.xsrf.token=A5KQ-2QAV-T4JA-FDED_6bf2543f71c9637a056525a5ad37217cf2b448a6_lout;
+        Path=/jira; Secure; SameSite=None
+      Strict-Transport-Security:
+      - max-age=31536000
+      Vary:
+      - Accept
+      Via:
+      - 1.1 issues.apache.org
+      X-AREQUESTID:
+      - 740x132649421x55
+      X-AUSERNAME:
+      - anonymous
+      X-Content-Type-Options:
+      - nosniff
+      X-Frame-Options:
+      - SAMEORIGIN
+      X-XSS-Protection:
+      - 1; mode=block
+    status:
+      code: 404
+      message: ''
+version: 1

@@ -1,0 +1,62 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - dlt/1.30.0
+    method: GET
+    uri: https://issues.apache.org/jira/rest/api/2/serverInfo
+  response:
+    body:
+      string: '{"baseUrl":"https://issues.apache.org/jira","version":"8.20.10","versionNumbers":[8,20,10],"deploymentType":"Server","buildNumber":820010,"buildDate":"2022-06-22T00:00:00.000+0000","databaseBuildNumber":820010,"scmInfo":"ace47f9899e9ee25d7157d59aa17ab06aee30d3d","serverTitle":"ASF
+        Jira"}'
+    headers:
+      Cache-Control:
+      - no-cache, no-store, no-transform
+      Connection:
+      - Keep-Alive
+      Content-Encoding:
+      - gzip
+      Content-Length:
+      - '227'
+      Content-Security-Policy:
+      - sandbox
+      Content-Type:
+      - application/json;charset=UTF-8
+      Date:
+      - Fri, 18 Sep 2026 12:00:07 GMT
+      Keep-Alive:
+      - timeout=3, max=100
+      Referrer-Policy:
+      - strict-origin-when-cross-origin
+      Server:
+      - Apache
+      Set-Cookie:
+      - atlassian.xsrf.token=A5KQ-2QAV-T4JA-FDED_0a18da820b7beb89256bc77e4519a827dd02b143_lout;
+        Path=/jira; Secure; SameSite=None
+      Strict-Transport-Security:
+      - max-age=31536000
+      Vary:
+      - Accept-Encoding
+      Via:
+      - 1.1 issues.apache.org
+      X-AREQUESTID:
+      - 720x132582504x16
+      X-AUSERNAME:
+      - anonymous
+      X-Content-Type-Options:
+      - nosniff
+      X-Frame-Options:
+      - SAMEORIGIN
+      X-XSS-Protection:
+      - 1; mode=block
+    status:
+      code: 200
+      message: ''
+version: 1
