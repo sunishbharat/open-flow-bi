@@ -1,4 +1,26 @@
 from openflowbi.jira import flatten
+from openflowbi.jira.fields import Field
+
+
+def test_fields_flattens_field_objects():
+    raw = [
+        Field(id="customfield_10001", name="Story Points", schema_type="number", custom=True),
+        Field(id="summary", name="Summary", schema_type="string", custom=False),
+    ]
+    rows = list(flatten.fields(raw))
+    assert rows == [
+        {
+            "field_id": "customfield_10001",
+            "name": "Story Points",
+            "schema_type": "number",
+            "custom": True,
+        },
+        {"field_id": "summary", "name": "Summary", "schema_type": "string", "custom": False},
+    ]
+
+
+def test_fields_empty_yields_nothing():
+    assert list(flatten.fields([])) == []
 
 
 def test_issues_flattens_normal_case():

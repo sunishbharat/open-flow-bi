@@ -1,0 +1,29 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - dlt/1.30.0
+    method: GET
+    uri: https://example.atlassian.net/rest/api/2/myself
+  response:
+    body:
+      # Hand-authored, not recorded from live traffic — no Cloud tenant is
+      # available yet. Shape matches Atlassian's documented /myself response
+      # (a subset: only the fields account_timezone() reads). Replace with a
+      # real recording once Cloud credentials are available.
+      string: '{"accountId":"5b10a2844c20165700ede21g","emailAddress":"a@example.com","displayName":"Example
+        User","timeZone":"America/New_York","locale":"en_US"}'
+    headers:
+      Content-Type:
+      - application/json;charset=UTF-8
+    status:
+      code: 200
+      message: ''
+version: 1

@@ -1,4 +1,5 @@
 import pytest
+import requests
 
 from openflowbi.jira import deployment
 
@@ -24,6 +25,28 @@ def test_detect_cloud():
     profile = deployment.detect(CLOUD_STUB, email="a@example.com", api_token="dummy-token")
     assert profile.is_cloud is True
     assert profile.base_url == CLOUD_STUB
+
+
+@pytest.mark.vcr
+def test_account_timezone_dc_raises_on_anonymous_access():
+    # Apache's public Jira has no authenticated account behind the dummy PAT
+    # this repo's live-test setup uses - GET /myself returns a real 401 with
+    # an XML (not JSON) body, live-recorded, so .json() fails with
+    # JSONDecodeError rather than a clean HTTPError. requests.exceptions.
+    # JSONDecodeError still subclasses RequestException, so pipeline/
+    # source.py's issues resource and cli.py's `doctor` (which both catch
+    # RequestException broadly) degrade correctly rather than crash - this
+    # is the real shape a caller must handle, not a hypothetical one.
+    with pytest.raises(requests.exceptions.RequestException):
+        deployment.account_timezone(APACHE_JIRA, None)
+
+
+@pytest.mark.vcr
+def test_account_timezone_cloud():
+    # No Cloud tenant available; hand-authored cassette matching Atlassian's
+    # documented /myself response shape (see CLOUD_STUB comment above).
+    tz = deployment.account_timezone(CLOUD_STUB, None)
+    assert tz == "America/New_York"
 
 
 def test_select_auth_cloud_requires_email_and_token():

@@ -6,7 +6,12 @@ import pyarrow.parquet as pq
 import pytest
 
 from openflowbi.jira.deployment import DeploymentProfile
+from openflowbi.jira.fields import Field
 from openflowbi.pipeline import run as pipeline_run
+
+CLOUD_PROFILE = DeploymentProfile(
+    is_cloud=True, base_url="https://example.atlassian.net", version="1001.0.0", auth=None
+)  # type: ignore[arg-type]
 
 APACHE_JIRA = "https://issues.apache.org/jira"
 
@@ -100,6 +105,79 @@ def test_run_writes_parquet_with_issue_id_dc(tmp_path):
     assert "issue_key" in columns
     # issue_id must be the identity dlt merges on — never issue_key.
     assert table.num_rows <= 3
+
+
+def test_run_writes_parquet_for_fields(tmp_path):
+    # Mocked, not a VCR cassette: unlike the search/changelog HTTP shape
+    # (which genuinely differs between Cloud and Server/DC and is covered by
+    # real/hand-authored cassettes in tests/jira/test_fields.py), fields.fetch()
+    # is a single non-paginated GET with no deployment-specific branching, so
+    # one mocked pipeline-wiring test covers both. Mocking (not a cassette)
+    # also sidesteps a real dlt behaviour: DltResource extraction always runs
+    # each resource on a worker thread (dlt/extract/pipe_iterator.py), and
+    # that thread's teardown isn't synchronized tightly enough with vcrpy's
+    # per-test cassette patch/unpatch for back-to-back cassette-based
+    # pipeline.run() calls in the same process — it intermittently serves a
+    # request made by test N's straggling worker thread through test N+1's
+    # already-active cassette. Confirmed empirically (multiple reruns of a
+    # cassette-based version of this test failed with cross-test cassette
+    # mismatches); tests/jira/*.py's plain-function cassette tests aren't
+    # affected since they never go through dlt's resource/pipe machinery.
+    fake_fields = [
+        Field(id="summary", name="Summary", schema_type="string", custom=False),
+        Field(id="customfield_10032", name="Story Points", schema_type="number", custom=True),
+    ]
+    with patch("openflowbi.pipeline.source.fields_mod.fetch", return_value=fake_fields):
+        info = pipeline_run.run(
+            FAKE_PROFILE,
+            out_dir=tmp_path / "out",
+            pipelines_dir=str(tmp_path / ".dlt"),
+            resources=("fields",),
+        )
+
+    assert not info.has_failed_jobs
+
+    parquet_files = list((tmp_path / "out").glob("jira_raw/fields/*.parquet"))
+    assert parquet_files, "expected at least one fields parquet file"
+
+    table = pq.read_table(parquet_files[0])
+    assert set(table.column_names) >= {"field_id", "name", "schema_type", "custom"}
+    assert table.num_rows == 2
+
+
+def test_run_writes_parquet_with_issue_id_cloud(tmp_path):
+    # Mocked, not a VCR cassette — see test_run_writes_parquet_for_fields'
+    # comment on the dlt worker-thread/vcrpy cassette race this sidesteps.
+    # The Cloud-specific HTTP shape (POST /search/jql, cursor pagination)
+    # this test doesn't re-exercise is covered directly, without going
+    # through dlt's threaded resource machinery, by tests/pipeline/
+    # test_source.py's _jql tests and (at the raw HTTP level)
+    # tests/jira/test_changelog.py's Cloud cassettes.
+    with (
+        patch("openflowbi.pipeline.source.deployment_mod.account_timezone", return_value="UTC"),
+        patch(
+            "openflowbi.pipeline.source._search_pages",
+            side_effect=_floor_filtered_search_pages([]),
+        ),
+    ):
+        info = pipeline_run.run(
+            CLOUD_PROFILE,
+            project="PROJ",
+            limit=2,
+            out_dir=tmp_path / "out",
+            pipelines_dir=str(tmp_path / ".dlt"),
+        )
+
+    assert not info.has_failed_jobs
+
+    parquet_files = list((tmp_path / "out").glob("jira_raw/issues/*.parquet"))
+    assert parquet_files, "expected at least one issues parquet file"
+
+    table = pq.read_table(parquet_files[0])
+    columns = table.column_names
+    assert "issue_id" in columns
+    assert "issue_key" in columns
+    assert table.num_rows == 2
 
 
 def test_kill_mid_run_commits_nothing_and_resume_recovers_every_issue(tmp_path):

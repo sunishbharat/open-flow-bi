@@ -44,6 +44,17 @@ def test_fetch_bulk_unavailable_on_dc():
 
 
 @pytest.mark.vcr
+def test_fetch_per_issue_cloud():
+    # No Cloud tenant available; hand-authored cassette. Unlike Apache's
+    # Server/DC instance (test_fetch_per_issue_unavailable_returns_none_dc
+    # above), Cloud does expose this endpoint — this is the success path
+    # that instance can't demonstrate live.
+    result = changelog.fetch_per_issue("https://example.atlassian.net", None, "10001")
+    assert result is not None
+    assert result[0]["id"] == "10001"
+
+
+@pytest.mark.vcr
 def test_fetch_bulk_cloud():
     # No Cloud tenant available yet; hand-authored cassette matching
     # Atlassian's documented bulkfetch response shape.

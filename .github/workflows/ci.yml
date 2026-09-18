@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: ruff
+        run: uv run ruff check src tests
+
+      - name: mypy
+        run: uv run mypy src
+
+      # No network at test time (tests/conftest.py's vcr_config + this
+      # project's --record-mode=none default in pyproject.toml): all Jira
+      # HTTP is replayed from tests/cassettes/{cloud,dc}/, real or
+      # hand-authored (CLAUDE.md "Write the test with the code").
+      - name: pytest
+        run: uv run pytest -q

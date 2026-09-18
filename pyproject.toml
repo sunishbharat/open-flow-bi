@@ -45,6 +45,7 @@ addopts = "--record-mode=none"
 [dependency-groups]
 dev = [
     "mypy>=2.3.1",
+    "narwhals>=2.26.0",
     "pandera>=0.33.1",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",

@@ -1,11 +1,9 @@
-import itertools
+from openflowbi.pipeline.source import _jql
 
-import pytest
-
-from openflowbi.jira.deployment import DeploymentProfile
-from openflowbi.pipeline.source import _jql, jira_source
-
-APACHE_JIRA = "https://issues.apache.org/jira"
+# The "fields" dlt resource wrapper is exercised end-to-end in
+# tests/pipeline/test_run.py (via pipeline_run.run(), which properly closes
+# dlt's ManagedPipeIterator worker thread) rather than here via direct
+# DltResource iteration, which doesn't - see that module's comments.
 
 
 def test_jql_without_cursor_sorts_by_created():
@@ -26,15 +24,3 @@ def test_jql_with_cursor_floors_and_sorts_by_updated():
 def test_jql_with_cursor_and_no_project():
     jql = _jql(None, updated_since="2024-01-15 09:30")
     assert jql == 'updated >= "2024-01-15 09:30" order by updated asc'
-
-
-@pytest.mark.vcr
-def test_fields_resource_yields_flattened_dicts_dc():
-    profile = DeploymentProfile(is_cloud=False, base_url=APACHE_JIRA, version="8.20.10", auth=None)  # type: ignore[arg-type]
-    source = jira_source(profile)
-
-    rows = list(itertools.islice(source.fields, 3))
-
-    assert len(rows) == 3
-    for row in rows:
-        assert set(row) == {"field_id", "name", "schema_type", "custom"}

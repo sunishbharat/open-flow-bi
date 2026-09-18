@@ -2,6 +2,26 @@ from collections.abc import Iterable, Iterator
 from typing import Any
 
 from openflowbi.jira.changelog import ChangelogBatch
+from openflowbi.jira.fields import Field
+
+
+def fields(raw_fields: Iterable[Field]) -> Iterator[dict[str, Any]]:
+    """Flatten Field objects into passthrough dicts for the dlt `fields` resource.
+
+    Pure: no I/O, no clock, no global state (rule 3). Trivial today, but kept
+    here (not inline in pipeline/source.py) so it can be exercised directly
+    without going through dlt's resource-iteration machinery, which — unlike
+    pipeline.run() — doesn't clean up its worker thread deterministically on
+    early return; see tests/pipeline/test_run.py's fields-resource tests for
+    the actually-reliable way to exercise the dlt wrapper end-to-end.
+    """
+    for field in raw_fields:
+        yield {
+            "field_id": field.id,
+            "name": field.name,
+            "schema_type": field.schema_type,
+            "custom": field.custom,
+        }
 
 
 def issues(raw_issues: Iterable[dict[str, Any]]) -> Iterator[dict[str, Any]]:

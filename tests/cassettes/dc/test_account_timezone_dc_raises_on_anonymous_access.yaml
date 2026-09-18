@@ -1,0 +1,62 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - dlt/1.30.0
+    method: GET
+    uri: https://issues.apache.org/jira/rest/api/2/myself
+  response:
+    body:
+      string: <?xml version="1.0" encoding="UTF-8" standalone="yes"?><status><status-code>401</status-code><message>Client
+        must be authenticated to access this resource.</message></status>
+    headers:
+      Cache-Control:
+      - no-transform
+      Connection:
+      - Keep-Alive
+      Content-Length:
+      - '174'
+      Content-Security-Policy:
+      - sandbox
+      Content-Type:
+      - application/xml;charset=UTF-8
+      Date:
+      - Fri, 18 Sep 2026 13:43:55 GMT
+      Keep-Alive:
+      - timeout=3, max=100
+      Referrer-Policy:
+      - strict-origin-when-cross-origin
+      Server:
+      - Apache
+      Set-Cookie:
+      - atlassian.xsrf.token=A5KQ-2QAV-T4JA-FDED_7063dd715e7bd79905c23d71f0e1d478e6664373_lout;
+        Path=/jira; Secure; SameSite=None
+      Strict-Transport-Security:
+      - max-age=31536000
+      Vary:
+      - Accept
+      Via:
+      - 1.1 issues.apache.org
+      WWW-Authenticate:
+      - OAuth realm="https%3A%2F%2Fissues.apache.org%2Fjira"
+      X-AREQUESTID:
+      - 823x132913232x7
+      X-AUSERNAME:
+      - anonymous
+      X-Content-Type-Options:
+      - nosniff
+      X-Frame-Options:
+      - SAMEORIGIN
+      X-XSS-Protection:
+      - 1; mode=block
+    status:
+      code: 401
+      message: ''
+version: 1

@@ -32,6 +32,8 @@ uv run flowbi doctor                          # detect deployment, account timez
 uv run flowbi extract fields --sink table      # preview field (name, schema type) -> id map
 uv run flowbi extract issues --limit 20        # issues -> out/jira_raw/issues/*.parquet
 uv run flowbi extract changelog --limit 20     # changelog (3-tier) -> out/jira_raw/issue_changelog/*.parquet
+uv run flowbi quality check issues             # validate out/jira_raw/issues/*.parquet against its pandera contract
+uv run flowbi quality check issue_changelog    # same, for the changelog table
 ```
 
 `--limit` bounds every extract command — a debug run never walks a whole project by accident.
@@ -96,9 +98,52 @@ uv run ruff check src tests
 uv run mypy src
 ```
 
+These three commands are what `.github/workflows/ci.yml` runs on every push/PR (via `uv sync
+--locked` first) — running them locally before pushing is the same check CI will do.
+
 Tests replay cassettes under `tests/cassettes/{cloud,dc}/` — both trees must pass. Recording a new
 cassette needs real network access (`--record-mode=once`); see `docs/session-status-2026-09-18.md`
 if you hit TLS/proxy issues recording against a live Jira instance.
+
+Cassette-based HTTP tests only exist at the `jira/*.py` layer (plain functions). Anything under
+`pipeline/` that needs to simulate HTTP uses `unittest.mock.patch` on `_search_pages`/
+`account_timezone`/`fields_mod.fetch` instead of a cassette — see `docs/session-status-2026-09-18.md`'s
+M6 section for why (a real dlt+vcrpy worker-thread race, not a style choice). Follow that pattern
+for any new `pipeline/`-level test rather than adding another cassette there.
+
+### Testing the quality contracts (M6)
+
+`src/openflowbi/quality/checks.py` holds pandera contracts for the `issues` and `issue_changelog`
+tables (`issue_id` unique/non-null, the changelog's `(issue_id, history_id, item_index)` unique
+together, `item_index >= 0`, `source` restricted to the three changelog tiers). Pure, no network:
+
+```bash
+uv run pytest tests/quality -q
+```
+
+Against real output, after an `extract` run:
+
+```bash
+uv run flowbi extract issues --limit 20
+uv run flowbi quality check issues             # prints OK + row/file counts, or FAILED + the pandera error
+uv run flowbi extract changelog --limit 20
+uv run flowbi quality check issue_changelog
+```
+
+`quality check` exits 1 on a contract violation or if no Parquet files are found yet for that
+table — safe to use as a CI/pipeline gate later, not just a manual check.
+
+**A real gotcha, found while verifying this against live output**: `quality check issue_changelog`
+validates every accumulated file under `out/jira_raw/issue_changelog/`, the same way
+`debug/queries.sql`'s duplicate-`item_index` query does — it does not limit itself to the most
+recent `_dlt_load_id`. `extract changelog` (unlike `extract issues`) isn't incremental, so a second
+`extract changelog` run against the same `out/` re-fetches and re-appends the same issues (the
+filesystem destination falls back from `merge` to `append` — see
+`docs/session-status-2026-09-18.md`), which genuinely produces duplicate
+`(issue_id, history_id, item_index)` rows on disk, and `quality check` correctly reports `FAILED`
+for it. This isn't a bug in the check; it's real information about accumulated dev output. To see
+a clean `OK` pass, either clear `out/jira_raw/issue_changelog/` first or point `--out-dir` at a
+fresh directory before running `extract changelog` once.
 
 ### Testing the incremental extraction (M5)
 

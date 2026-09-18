@@ -98,13 +98,7 @@ def jira_source(
 ) -> tuple[Any, ...]:
     @dlt.resource(name="fields", write_disposition="replace")
     def fields() -> Iterator[dict[str, Any]]:
-        for field in fields_mod.fetch(profile.base_url, profile.auth):
-            yield {
-                "field_id": field.id,
-                "name": field.name,
-                "schema_type": field.schema_type,
-                "custom": field.custom,
-            }
+        yield from flatten.fields(fields_mod.fetch(profile.base_url, profile.auth))
 
     # max_table_nesting=0: `fields` stays a single passthrough JSON column
     # instead of exploding into per-instance child tables (CLAUDE.md: strict

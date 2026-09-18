@@ -1,23 +1,37 @@
 import itertools
 from importlib.metadata import version as _pkg_version
+from pathlib import Path
 from typing import Annotated
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import requests
 import typer
+from pandera.errors import SchemaError
 from rich.console import Console
 from rich.table import Table
 
 from openflowbi.config import Settings
-from openflowbi.jira import deployment
+from openflowbi.jira import deployment, flatten
+from openflowbi.jira import fields as fields_mod
 from openflowbi.jira.deployment import DeploymentProfile
 from openflowbi.logging import configure_logging
 from openflowbi.pipeline import run as pipeline_run
-from openflowbi.pipeline.source import jira_source
+from openflowbi.quality import checks
 
 app = typer.Typer(help="flowbi — Jira flow-metrics extractor")
 extract_app = typer.Typer(help="Extract Jira data")
+quality_app = typer.Typer(help="Validate extracted Parquet against pandera contracts")
 app.add_typer(extract_app, name="extract")
+app.add_typer(quality_app, name="quality")
 console = Console()
+
+# Table name -> its pandera contract (quality/checks.py). Extend this
+# alongside jira_source's resources, not with a new hand-rolled writer.
+TABLE_VALIDATORS = {
+    "issues": checks.validate_issues,
+    "issue_changelog": checks.validate_changelog,
+}
 
 configure_logging()
 
@@ -82,8 +96,15 @@ def extract_fields(sink: SinkOption = "table", limit: LimitOption = 20) -> None:
         raise typer.BadParameter("Only --sink table is supported until M3 adds a filesystem sink")
 
     profile = _resolve_profile()
-    source = jira_source(profile)
-    rows = list(itertools.islice(source.fields, limit))
+    # Calls fields.fetch() + flatten.fields() directly rather than going
+    # through jira_source()'s dlt-resource wrapper: this preview never
+    # touches a dlt destination (M2 note above), and dlt's DltResource.
+    # __iter__ always spins up a ManagedPipeIterator worker thread even for
+    # a single already-fetched HTTP response - unnecessary weight for a
+    # terminal preview, and one that pipeline_run.run() (used by the other
+    # extract commands) properly tears down but bare iteration does not.
+    raw_fields = fields_mod.fetch(profile.base_url, profile.auth)
+    rows = list(itertools.islice(flatten.fields(raw_fields), limit))
 
     table = Table(title="Jira fields")
     table.add_column("id")
@@ -124,6 +145,32 @@ def extract_changelog(limit: LimitOption = 20) -> None:
         profile, project=settings.jira_project, limit=limit, resources=("issue_changelog",)
     )
     console.print(info)
+
+
+@quality_app.command("check")
+def quality_check(
+    table: Annotated[str, typer.Argument(help=f"one of {sorted(TABLE_VALIDATORS)}")],
+    out_dir: Annotated[
+        Path, typer.Option(help="Root of the filesystem destination")
+    ] = Path("out"),
+) -> None:
+    """Validate a table's Parquet output against its pandera contract (quality/checks.py)."""
+    if table not in TABLE_VALIDATORS:
+        raise typer.BadParameter(f"table must be one of {sorted(TABLE_VALIDATORS)}")
+
+    files = sorted((out_dir / "jira_raw" / table).glob("*.parquet"))
+    if not files:
+        console.print(f"[yellow]No Parquet files found for {table} under {out_dir}[/yellow]")
+        raise typer.Exit(code=1)
+
+    combined = pa.concat_tables([pq.read_table(f) for f in files])
+    try:
+        TABLE_VALIDATORS[table](combined)
+    except SchemaError as exc:
+        console.print(f"[red]FAILED[/red] {table}: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"[green]OK[/green] {table}: {combined.num_rows} rows, {len(files)} file(s)")
 
 
 if __name__ == "__main__":

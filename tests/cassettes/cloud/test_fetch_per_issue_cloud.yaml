@@ -1,0 +1,33 @@
+interactions:
+- request:
+    body: null
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      User-Agent:
+      - dlt/1.30.0
+    method: GET
+    uri: https://example.atlassian.net/rest/api/2/issue/10001/changelog?startAt=0&maxResults=100
+  response:
+    body:
+      # Hand-authored, not recorded from live traffic — no Cloud tenant is
+      # available yet. Shape matches Atlassian's documented per-issue
+      # changelog response. Unlike Apache's Server/DC instance (see
+      # test_fetch_per_issue_unavailable_returns_none_dc), Cloud does expose
+      # this endpoint — this is the success path that instance can't
+      # demonstrate live. Replace with a real recording once Cloud
+      # credentials are available.
+      string: '{"self":"https://example.atlassian.net/rest/api/2/issue/10001/changelog","maxResults":100,"startAt":0,"total":1,"isLast":true,"values":[{"id":"10001","author":{"accountId":"5b10a2844c20165700ede21g","displayName":"Example
+        User"},"created":"2026-01-01T00:00:00.000+0000","items":[{"field":"status","fieldtype":"jira","fieldId":"status","from":"1","fromString":"To
+        Do","to":"3","toString":"In Progress"}]}]}'
+    headers:
+      Content-Type:
+      - application/json;charset=UTF-8
+    status:
+      code: 200
+      message: ''
+version: 1
