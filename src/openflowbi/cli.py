@@ -43,6 +43,11 @@ LimitOption = Annotated[
     typer.Option("--limit", help="Max rows to process - never walk a project by accident"),
 ]
 
+DestinationOption = Annotated[
+    str,
+    typer.Option("--destination", help="filesystem (default, Parquet under out/) or postgres"),
+]
+
 
 def _resolve_profile() -> DeploymentProfile:
     settings = Settings()  # type: ignore[call-arg]  # required fields resolved from env at runtime
@@ -117,8 +122,8 @@ def extract_fields(sink: SinkOption = "table", limit: LimitOption = 20) -> None:
 
 
 @extract_app.command("issues")
-def extract_issues(limit: LimitOption = 20) -> None:
-    """Extract issues to the filesystem destination as Parquet under out/.
+def extract_issues(limit: LimitOption = 20, destination: DestinationOption = "filesystem") -> None:
+    """Extract issues to the filesystem (Parquet under out/) or Postgres destination.
 
     Incrementally: only issues updated since the last successful run's
     watermark are fetched (dlt pipeline state) - a --limit-truncated run only
@@ -132,17 +137,26 @@ def extract_issues(limit: LimitOption = 20) -> None:
         project=settings.jira_project,
         limit=limit,
         incremental_start=settings.jira_incremental_start,
+        destination=destination,
+        postgres_dsn=settings.postgres_dsn,
     )
     console.print(info)
 
 
 @extract_app.command("changelog")
-def extract_changelog(limit: LimitOption = 20) -> None:
-    """Extract issue changelogs (3-tier: expand -> bulkfetch -> per-issue) as Parquet under out/."""
+def extract_changelog(
+    limit: LimitOption = 20, destination: DestinationOption = "filesystem"
+) -> None:
+    """Extract issue changelogs (3-tier: expand -> bulkfetch -> per-issue)."""
     settings = Settings()  # type: ignore[call-arg]  # required fields resolved from env at runtime
     profile = _resolve_profile()
     info = pipeline_run.run(
-        profile, project=settings.jira_project, limit=limit, resources=("issue_changelog",)
+        profile,
+        project=settings.jira_project,
+        limit=limit,
+        resources=("issue_changelog",),
+        destination=destination,
+        postgres_dsn=settings.postgres_dsn,
     )
     console.print(info)
 

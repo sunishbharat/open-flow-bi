@@ -5,7 +5,7 @@ description = "Self-hosted Jira flow-metrics extractor"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "dlt[duckdb,filesystem,parquet]>=1.30.0",
+    "dlt[duckdb,filesystem,parquet,postgres]>=1.30.0",
     "hishel>=1.4.0",
     "pendulum>=3.2.0",
     "pydantic-settings",
