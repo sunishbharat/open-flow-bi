@@ -5,6 +5,7 @@ description = "Self-hosted Jira flow-metrics extractor"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.20.0",
     "dlt[duckdb,filesystem,parquet,postgres]>=1.30.0",
     "hishel>=1.4.0",
     "pendulum>=3.2.0",
@@ -40,7 +41,10 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--record-mode=none"
+addopts = "--record-mode=none -m \"not postgres\""
+markers = [
+    "postgres: needs a real Postgres via testcontainers/Docker - excluded from the default (zero-network) run, see M7.4",
+]
 
 [dependency-groups]
 dev = [
@@ -52,5 +56,6 @@ dev = [
     "pytest-recording>=0.13.4",
     "respx>=0.23.1",
     "ruff>=0.16.8",
+    "testcontainers[postgres]>=4.15.0",
     "vcrpy>=8.3.0",
 ]

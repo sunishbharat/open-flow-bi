@@ -1,4 +1,5 @@
 import itertools
+from datetime import UTC, datetime
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Annotated
@@ -6,6 +7,7 @@ from typing import Annotated
 import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
+import structlog
 import typer
 from pandera.errors import SchemaError
 from rich.console import Console
@@ -16,8 +18,11 @@ from openflowbi.jira import deployment, flatten
 from openflowbi.jira import fields as fields_mod
 from openflowbi.jira.deployment import DeploymentProfile
 from openflowbi.logging import configure_logging
+from openflowbi.ops import sync_run as sync_run_mod
 from openflowbi.pipeline import run as pipeline_run
-from openflowbi.quality import checks
+from openflowbi.quality import checks, sql_checks
+
+logger = structlog.get_logger(__name__)
 
 app = typer.Typer(help="flowbi — Jira flow-metrics extractor")
 extract_app = typer.Typer(help="Extract Jira data")
@@ -56,6 +61,7 @@ def _resolve_profile() -> DeploymentProfile:
         email=settings.jira_email,
         api_token=settings.jira_api_token,
         pat=settings.jira_pat,
+        instance_id=settings.jira_instance_id,
     )
 
 
@@ -109,7 +115,7 @@ def extract_fields(sink: SinkOption = "table", limit: LimitOption = 20) -> None:
     # terminal preview, and one that pipeline_run.run() (used by the other
     # extract commands) properly tears down but bare iteration does not.
     raw_fields = fields_mod.fetch(profile.base_url, profile.auth)
-    rows = list(itertools.islice(flatten.fields(raw_fields), limit))
+    rows = list(itertools.islice(flatten.fields(raw_fields, profile.instance_id), limit))
 
     table = Table(title="Jira fields")
     table.add_column("id")
@@ -167,10 +173,22 @@ def quality_check(
     out_dir: Annotated[
         Path, typer.Option(help="Root of the filesystem destination")
     ] = Path("out"),
+    destination: DestinationOption = "filesystem",
 ) -> None:
-    """Validate a table's Parquet output against its pandera contract (quality/checks.py)."""
+    """Validate a table against its contract.
+
+    filesystem (default): pandera row-shape check against Parquet under
+    out_dir. postgres: whole-table SQL invariants (quality/sql_checks.py) -
+    pandera on a sample can't answer "is this unique across the whole table"
+    the way the database can (docs/phase2-postgres-design.md §9). Either way
+    the verdict is recorded as a flowbi_ops.sync_run row.
+    """
     if table not in TABLE_VALIDATORS:
         raise typer.BadParameter(f"table must be one of {sorted(TABLE_VALIDATORS)}")
+
+    if destination == "postgres":
+        _quality_check_postgres(table)
+        return
 
     files = sorted((out_dir / "jira_raw" / table).glob("*.parquet"))
     if not files:
@@ -185,6 +203,50 @@ def quality_check(
         raise typer.Exit(code=1) from exc
 
     console.print(f"[green]OK[/green] {table}: {combined.num_rows} rows, {len(files)} file(s)")
+
+
+def _quality_check_postgres(table: str) -> None:
+    settings = Settings()  # type: ignore[call-arg]  # required fields resolved from env at runtime
+    if not settings.postgres_dsn:
+        raise typer.BadParameter("FLOWBI_POSTGRES_DSN is required for --destination postgres")
+    profile = _resolve_profile()
+
+    started_at = datetime.now(UTC)
+    result = sql_checks.run_checks(settings.postgres_dsn, table)
+    finished_at = datetime.now(UTC)
+
+    result_table = Table(title=f"SQL quality checks - {table}")
+    result_table.add_column("check")
+    result_table.add_column("kind")
+    result_table.add_column("count")
+    for name, count in result.blocking.items():
+        result_table.add_row(name, "blocking", str(count))
+    for name, count in result.alerting.items():
+        result_table.add_row(name, "alerting", str(count))
+    console.print(result_table)
+
+    status = "succeeded" if result.passed else "quality_failed"
+    error = f"blocking checks failed: {', '.join(result.failing)}" if result.failing else None
+
+    try:
+        sync_run_mod.record(
+            settings.postgres_dsn,
+            instance_id=profile.instance_id,
+            project=settings.jira_project,
+            mode=sql_checks.TABLE_MODE[table],
+            pipeline_name=f"quality-check-{table}",
+            status=status,
+            started_at=started_at,
+            finished_at=finished_at,
+            error=error,
+        )
+    except Exception:  # noqa: BLE001 - best-effort bookkeeping, mirrors pipeline/run.py's _mark_dirty
+        logger.warning("sync_run_write_failed", table=table, exc_info=True)
+
+    if not result.passed:
+        console.print(f"[red]FAILED[/red] {table}: {', '.join(result.failing)}")
+        raise typer.Exit(code=1)
+    console.print(f"[green]OK[/green] {table}: all blocking checks returned 0")
 
 
 if __name__ == "__main__":

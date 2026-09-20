@@ -10,13 +10,21 @@ from openflowbi.jira.fields import Field
 from openflowbi.pipeline import run as pipeline_run
 
 CLOUD_PROFILE = DeploymentProfile(
-    is_cloud=True, base_url="https://example.atlassian.net", version="1001.0.0", auth=None
+    is_cloud=True,
+    base_url="https://example.atlassian.net",
+    version="1001.0.0",
+    auth=None,
+    instance_id="example-atlassian-net",
 )  # type: ignore[arg-type]
 
 APACHE_JIRA = "https://issues.apache.org/jira"
 
 FAKE_PROFILE = DeploymentProfile(
-    is_cloud=False, base_url="https://fake.example", version="1", auth=None
+    is_cloud=False,
+    base_url="https://fake.example",
+    version="1",
+    auth=None,
+    instance_id="fake-example",
 )  # type: ignore[arg-type]
 
 # Six issues, one per day, each "updated" == "created" — oldest first, which
@@ -75,16 +83,81 @@ def _kill_after(n):
 
 
 def _loaded_issue_ids(out_dir):
+    # issue_id is bigint on disk from M7.2 on (docs/phase2-postgres-design.md
+    # §3) — cast back to str so comparisons against ALL_IDS/call_log (still
+    # str, matching the raw Jira JSON shape) don't need to change throughout.
     files = list(out_dir.glob("jira_raw/issues/*.parquet"))
     ids: set[str] = set()
     for f in files:
-        ids.update(pq.read_table(f).column("issue_id").to_pylist())
+        ids.update(str(v) for v in pq.read_table(f).column("issue_id").to_pylist())
+    return sorted(ids, key=int)
+
+
+# Same six issues as ROWS above, but each carries one changelog history item
+# (expand tier, complete=True) — an issue with zero histories yields zero
+# flatten.changelog() rows, so it could never exercise the M7.5 incremental
+# cursor at all (see pipeline/source.py's issue_changelog comment).
+CHANGELOG_ROWS = [
+    {
+        "id": str(i),
+        "key": f"PROJ-{i}",
+        "fields": {"updated": f"2024-01-0{i}T00:00:00.000+0000"},
+        "changelog": {
+            "total": 1,
+            "histories": [
+                {
+                    "id": f"h{i}",
+                    "created": f"2024-01-0{i}T00:00:00.000+0000",
+                    "items": [
+                        {"field": "status", "fieldId": "status", "to": "3", "toString": "Done"}
+                    ],
+                }
+            ],
+        },
+    }
+    for i in range(1, 7)
+]
+CHANGELOG_ALL_IDS = [row["id"] for row in CHANGELOG_ROWS]
+
+
+def _floor_filtered_changelog_pages(call_log):
+    """Same idea as _floor_filtered_search_pages, but yielding CHANGELOG_ROWS
+    (embedded expand=changelog shape) instead of plain ROWS.
+    """
+
+    def fake(profile, jql, expand=None):
+        match = _FLOOR_RE.search(jql)
+        floor_date = match.group(1)[:10] if match else None
+        ids = [
+            row["id"]
+            for row in CHANGELOG_ROWS
+            if floor_date is None or row["fields"]["updated"][:10] >= floor_date
+        ]
+        call_log.append(ids)
+        for row in CHANGELOG_ROWS:
+            if row["id"] in ids:
+                yield row
+
+    return fake
+
+
+def _loaded_changelog_issue_ids(out_dir):
+    files = list(out_dir.glob("jira_raw/issue_changelog/*.parquet"))
+    ids: set[str] = set()
+    for f in files:
+        ids.update(str(v) for v in pq.read_table(f).column("issue_id").to_pylist())
     return sorted(ids, key=int)
 
 
 @pytest.mark.vcr
 def test_run_writes_parquet_with_issue_id_dc(tmp_path):
-    profile = DeploymentProfile(is_cloud=False, base_url=APACHE_JIRA, version="8.20.10", auth=None)  # type: ignore[arg-type]
+    profile = DeploymentProfile(
+        is_cloud=False,
+        base_url=APACHE_JIRA,
+        version="8.20.10",
+        auth=None,
+        instance_id="issues-apache-org",
+    )  # type: ignore[arg-type]
 
     info = pipeline_run.run(
         profile,
@@ -200,7 +273,8 @@ def test_kill_mid_run_commits_nothing_and_resume_recovers_every_issue(tmp_path):
             )
 
     assert not list(out_dir.glob("**/*.parquet"))
-    pipeline = dlt.attach(pipeline_name="openflowbi", pipelines_dir=str(pipelines_dir))
+    name = pipeline_run.pipeline_name(FAKE_PROFILE.instance_id, "PROJ")
+    pipeline = dlt.attach(pipeline_name=name, pipelines_dir=str(pipelines_dir))
     assert pipeline.state.get("sources", {}) == {}, "a killed run must not persist a watermark"
 
     call_log: list[list[str]] = []
@@ -265,3 +339,52 @@ def test_limit_truncated_run_advances_cursor_without_skipping_unfetched_issues(t
     assert "1" not in call_log[1]
     assert "2" not in call_log[1]
     assert _loaded_issue_ids(out_dir) == ALL_IDS
+
+
+def test_changelog_limit_truncated_run_advances_cursor_without_skipping_unfetched_issues(
+    tmp_path,
+):
+    """M7.5 acceptance (docs/phase2-postgres-design.md §14): issue_changelog
+    is now incremental too — mirrors the `issues` test directly above, one
+    resource swapped for the other.
+    """
+    out_dir = tmp_path / "out"
+    pipelines_dir = tmp_path / ".dlt"
+    call_log: list[list[str]] = []
+
+    with (
+        patch("openflowbi.pipeline.source.deployment_mod.account_timezone", return_value="UTC"),
+        patch(
+            "openflowbi.pipeline.source._search_pages",
+            side_effect=_floor_filtered_changelog_pages(call_log),
+        ),
+    ):
+        pipeline_run.run(
+            FAKE_PROFILE,
+            project="PROJ",
+            limit=3,
+            out_dir=out_dir,
+            pipelines_dir=str(pipelines_dir),
+            resources=("issue_changelog",),
+        )
+
+    assert _loaded_changelog_issue_ids(out_dir) == ["1", "2", "3"]
+
+    with (
+        patch("openflowbi.pipeline.source.deployment_mod.account_timezone", return_value="UTC"),
+        patch(
+            "openflowbi.pipeline.source._search_pages",
+            side_effect=_floor_filtered_changelog_pages(call_log),
+        ),
+    ):
+        pipeline_run.run(
+            FAKE_PROFILE,
+            project="PROJ",
+            out_dir=out_dir,
+            pipelines_dir=str(pipelines_dir),
+            resources=("issue_changelog",),
+        )
+
+    assert "1" not in call_log[1]
+    assert "2" not in call_log[1]
+    assert _loaded_changelog_issue_ids(out_dir) == CHANGELOG_ALL_IDS

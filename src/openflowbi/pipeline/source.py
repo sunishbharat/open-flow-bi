@@ -1,4 +1,4 @@
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from typing import Any
 
 import dlt
@@ -90,15 +90,48 @@ def _search_pages(
         yield from page
 
 
+def _updated_floor(profile: DeploymentProfile, cursor_start: str) -> str:
+    """Resolve an incremental cursor's JQL floor, in the account's timezone.
+
+    Shared by `issues` and `issue_changelog` (M7.5) — both track the same
+    Jira `updated` field, so the account-timezone lookup (and its
+    anonymous-access UTC fallback, see the resources below) only needs to
+    live in one place.
+    """
+    try:
+        timezone = deployment_mod.account_timezone(profile.base_url, profile.auth)
+    except requests.exceptions.RequestException:
+        # CLAUDE.md says to assert the account timezone at startup; doctor
+        # (M1) does that and fails loudly. Here, an unresolvable /myself
+        # (anonymous access or an invalid token - the live Apache Jira
+        # test target in this repo's docs uses a dummy PAT with no real
+        # account) must not crash extraction outright, so this degrades
+        # to UTC with a warning instead - callers with real credentials
+        # never hit this branch.
+        logger.warning(
+            "account_timezone_unavailable", base_url=profile.base_url, fallback="UTC"
+        )
+        timezone = "UTC"
+    return deployment_mod.jql_updated_floor(cursor_start, timezone)
+
+
 @dlt.source(name="jira")
 def jira_source(
     profile: DeploymentProfile,
     project: str | None = None,
     incremental_start: str = DEFAULT_INCREMENTAL_START,
 ) -> tuple[Any, ...]:
-    @dlt.resource(name="fields", write_disposition="replace")
+    # write_disposition="merge" + a compound (instance_id, field_id) key
+    # (docs/phase2-postgres-design.md §4.3) — a plain "replace" would wipe
+    # every other instance's fields sharing this dataset on the next run.
+    @dlt.resource(
+        name="fields",
+        primary_key=("instance_id", "field_id"),
+        write_disposition="merge",
+    )
     def fields() -> Iterator[dict[str, Any]]:
-        yield from flatten.fields(fields_mod.fetch(profile.base_url, profile.auth))
+        raw_fields = fields_mod.fetch(profile.base_url, profile.auth)
+        yield from flatten.fields(raw_fields, profile.instance_id)
 
     # max_table_nesting=0: `fields` stays a single passthrough JSON column
     # instead of exploding into per-instance child tables (CLAUDE.md: strict
@@ -106,7 +139,7 @@ def jira_source(
     # instance they meet).
     @dlt.resource(
         name="issues",
-        primary_key="issue_id",
+        primary_key=("instance_id", "issue_id"),
         write_disposition="merge",
         max_table_nesting=0,
     )
@@ -121,33 +154,63 @@ def jira_source(
         # Cursor state persists in the pipeline's durable state (dlt), not a
         # hand-rolled watermark table — resume-after-kill and --limit safety
         # both fall out of this rather than being written by hand (M5).
-        try:
-            timezone = deployment_mod.account_timezone(profile.base_url, profile.auth)
-        except requests.exceptions.RequestException:
-            # CLAUDE.md says to assert the account timezone at startup; doctor
-            # (M1) does that and fails loudly. Here, an unresolvable /myself
-            # (anonymous access or an invalid token - the live Apache Jira
-            # test target in this repo's docs uses a dummy PAT with no real
-            # account) must not crash extraction outright, so this degrades
-            # to UTC with a warning instead - callers with real credentials
-            # never hit this branch.
-            logger.warning(
-                "account_timezone_unavailable", base_url=profile.base_url, fallback="UTC"
-            )
-            timezone = "UTC"
-        floor = deployment_mod.jql_updated_floor(updated.start_value, timezone)
-        yield from flatten.issues(_search_pages(profile, _jql(project, updated_since=floor)))
+        floor = _updated_floor(profile, updated.start_value)
+        yield from flatten.issues(
+            _search_pages(profile, _jql(project, updated_since=floor)), profile.instance_id
+        )
 
     @dlt.resource(
         name="issue_changelog",
-        primary_key=("issue_id", "history_id", "item_index"),
+        primary_key=("instance_id", "issue_id", "history_id", "item_index"),
         write_disposition="merge",
     )
-    def issue_changelog() -> Iterator[dict[str, Any]]:
-        raw_issues: Iterable[dict[str, Any]] = _search_pages(
-            profile, _jql(project), expand="changelog"
+    def issue_changelog(
+        # M7.5 (docs/phase2-postgres-design.md §14): incremental off the same
+        # `updated` field as `issues`, tracked via each row's `updated_at`
+        # (flatten.changelog's issue_updated map below) — a separate cursor,
+        # not a literal shared watermark, since the two resources run from
+        # separate CLI commands (`extract issues`/`extract changelog`) and
+        # dlt scopes incremental state per resource regardless. §15 open
+        # question #1 (chaining issue_changelog off issues as a dlt
+        # transformer, to halve the HTTP search cost) is deferred again here
+        # for the same reason noted since M4/M5: issues' own search doesn't
+        # request expand=changelog, so chaining wouldn't save a request
+        # unless `issues` always paid for changelog data most runs don't need.
+        updated: dlt.sources.incremental[str] = dlt.sources.incremental(  # noqa: B008
+            "updated_at", initial_value=incremental_start
+        ),
+    ) -> Iterator[dict[str, Any]]:
+        floor = _updated_floor(profile, updated.start_value)
+        raw_issues = _search_pages(profile, _jql(project, updated_since=floor), expand="changelog")
+
+        # Tap each raw issue's fields.updated as it streams through, before
+        # changelog_mod.fetch() consumes the generator (it collects a
+        # "pending" list internally for the bulkfetch/per-issue tiers, so the
+        # tap must run first). flatten.changelog() stamps this onto every row
+        # as `updated_at`, which is what the incremental cursor above tracks.
+        #
+        # An issue with zero changelog items (complete=True, no histories —
+        # nothing to transition into yet) yields zero rows here, so the
+        # cursor can only advance based on rows that ARE emitted — safe by
+        # the same argument M5's --limit truncation relies on: it only ever
+        # advances to what was actually fetched and emitted, never silently
+        # skipping an unfetched/unemitted issue. A no-history issue is simply
+        # re-swept on the next run until it produces a row, or until its own
+        # `updated` timestamp moves past whatever the watermark advanced to
+        # in the meantime (which happens automatically the moment anything
+        # about it actually changes).
+        issue_updated: dict[str, str] = {}
+
+        def _tap(issues: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+            for issue in issues:
+                value = (issue.get("fields") or {}).get("updated")
+                if value is not None:
+                    issue_updated[issue["id"]] = value
+                yield issue
+
+        batches = changelog_mod.fetch(
+            profile.base_url, profile.auth, profile.is_cloud, _tap(raw_issues)
         )
-        batches = changelog_mod.fetch(profile.base_url, profile.auth, profile.is_cloud, raw_issues)
-        yield from flatten.changelog(batches)
+        yield from flatten.changelog(batches, profile.instance_id, issue_updated)
 
     return (fields, issues, issue_changelog)

@@ -18,6 +18,8 @@ def test_detect_dc():
     assert profile.is_cloud is False
     assert profile.base_url == APACHE_JIRA
     assert profile.version
+    # Default instance_id, derived from the host (M7.2: no FLOWBI_JIRA_INSTANCE_ID set).
+    assert profile.instance_id == "issues-apache-org"
 
 
 @pytest.mark.vcr
@@ -25,6 +27,27 @@ def test_detect_cloud():
     profile = deployment.detect(CLOUD_STUB, email="a@example.com", api_token="dummy-token")
     assert profile.is_cloud is True
     assert profile.base_url == CLOUD_STUB
+
+
+@pytest.mark.vcr
+def test_detect_dc_honours_explicit_instance_id():
+    profile = deployment.detect(APACHE_JIRA, pat="dummy-pat", instance_id="my-custom-slug")
+    assert profile.instance_id == "my-custom-slug"
+
+
+def test_derive_instance_id_slugifies_host():
+    assert deployment.derive_instance_id("https://issues.apache.org/jira") == "issues-apache-org"
+
+
+def test_derive_instance_id_strips_port_and_userinfo():
+    url = "https://user:pw@jira.example.com:8080"
+    assert deployment.derive_instance_id(url) == "jira-example-com"
+
+
+def test_derive_instance_id_is_stable_across_scheme_and_path():
+    a = deployment.derive_instance_id("https://issues.apache.org/jira")
+    b = deployment.derive_instance_id("http://issues.apache.org/jira/browse/KAFKA-1")
+    assert a == b
 
 
 @pytest.mark.vcr

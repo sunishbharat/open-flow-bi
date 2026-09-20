@@ -31,3 +31,12 @@ jobs:
       # hand-authored (CLAUDE.md "Write the test with the code").
       - name: pytest
         run: uv run pytest -q
+
+      # M7.6: the Postgres-marked tests (concurrency, issue_dirty, SQL
+      # checks) each spin up their own postgres:16-alpine via
+      # testcontainers[postgres] - no docker-compose/service-container
+      # wiring needed, only a working Docker daemon, which ubuntu-latest
+      # runners already provide (docs/phase2-postgres-design.md §11: "so CI
+      # needs no fixture wiring").
+      - name: pytest (postgres, testcontainers)
+        run: uv run pytest -q -m postgres

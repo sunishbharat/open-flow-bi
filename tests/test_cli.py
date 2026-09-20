@@ -24,7 +24,9 @@ def _write_issues_parquet(out_dir, issue_ids):
     ts = datetime(2024, 1, 1, tzinfo=UTC)
     table = pa.table(
         {
-            "issue_id": issue_ids,
+            "instance_id": ["inst-a"] * len(issue_ids),
+            # bigint from M7.2 (docs/phase2-postgres-design.md §3).
+            "issue_id": pa.array(issue_ids, type=pa.int64()),
             "issue_key": [f"PROJ-{i}" for i in issue_ids],
             "created_at": pa.array([ts] * len(issue_ids), type=timestamp),
             "updated_at": pa.array([ts] * len(issue_ids), type=timestamp),
@@ -34,7 +36,7 @@ def _write_issues_parquet(out_dir, issue_ids):
 
 
 def test_quality_check_passes_on_well_formed_issues(tmp_path):
-    _write_issues_parquet(tmp_path, ["1", "2"])
+    _write_issues_parquet(tmp_path, [1, 2])
     result = runner.invoke(app, ["quality", "check", "issues", "--out-dir", str(tmp_path)])
     assert result.exit_code == 0
     assert "OK" in result.stdout
@@ -42,7 +44,7 @@ def test_quality_check_passes_on_well_formed_issues(tmp_path):
 
 def test_quality_check_fails_on_duplicate_issue_id(tmp_path):
     # rule 4 (CLAUDE.md): issue_id is the only identity — never duplicated.
-    _write_issues_parquet(tmp_path, ["1", "1"])
+    _write_issues_parquet(tmp_path, [1, 1])
     result = runner.invoke(app, ["quality", "check", "issues", "--out-dir", str(tmp_path)])
     assert result.exit_code == 1
     assert "FAILED" in result.stdout

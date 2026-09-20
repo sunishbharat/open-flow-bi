@@ -15,7 +15,9 @@ def _ts(*args):
 
 def _issues_table(**overrides):
     columns = {
-        "issue_id": ["1", "2"],
+        "instance_id": ["inst-a", "inst-a"],
+        # bigint from M7.2 (docs/phase2-postgres-design.md §3), not string.
+        "issue_id": pa.array([1, 2], type=pa.int64()),
         "issue_key": ["PROJ-1", "PROJ-2"],
         # timestamp, not string: dlt's normalizer casts flatten.issues()'s
         # passthrough ISO strings to a real timestamp column at load time -
@@ -29,7 +31,8 @@ def _issues_table(**overrides):
 
 def _changelog_table(**overrides):
     columns = {
-        "issue_id": ["1", "1"],
+        "instance_id": ["inst-a", "inst-a"],
+        "issue_id": pa.array([1, 1], type=pa.int64()),
         "history_id": ["h1", "h1"],
         "item_index": pa.array([0, 1], type=pa.int64()),
         "source": ["expand", "expand"],
@@ -45,16 +48,27 @@ def test_validate_issues_accepts_a_well_formed_table():
 
 
 def test_validate_issues_rejects_duplicate_issue_id():
-    # rule 4 (CLAUDE.md): issue_id is the only identity — never duplicated.
-    table = _issues_table(issue_id=["1", "1"])
+    # rule 4 (CLAUDE.md): issue_id is the only identity — never duplicated
+    # (within the same instance_id — P2-D2).
+    table = _issues_table(issue_id=pa.array([1, 1], type=pa.int64()))
     with pytest.raises(SchemaError):
         checks.validate_issues(table)
 
 
 def test_validate_issues_rejects_null_issue_id():
-    table = _issues_table(issue_id=pa.array([None, "2"], type=pa.string()))
+    table = _issues_table(issue_id=pa.array([None, 2], type=pa.int64()))
     with pytest.raises(SchemaError):
         checks.validate_issues(table)
+
+
+def test_validate_issues_allows_same_issue_id_across_instances():
+    # P2-D2: instance_id is part of the primary key, so the same numeric
+    # issue_id from two different Jira instances is not a duplicate.
+    table = _issues_table(
+        instance_id=["inst-a", "inst-b"], issue_id=pa.array([1, 1], type=pa.int64())
+    )
+    validated = checks.validate_issues(table)
+    assert validated.num_rows == 2
 
 
 def test_validate_issues_allows_extra_passthrough_columns():
@@ -88,3 +102,14 @@ def test_validate_changelog_rejects_duplicate_composite_key():
     table = _changelog_table(item_index=pa.array([0, 0], type=pa.int64()))
     with pytest.raises(SchemaError):
         checks.validate_changelog(table)
+
+
+def test_validate_changelog_accepts_updated_at_when_present():
+    # M7.5: updated_at (the issue's own `fields.updated`, used as the
+    # incremental cursor) is optional (required=False, older/partial extracts
+    # predate it) but must still type-check when a table does carry it.
+    table = _changelog_table(
+        updated_at=pa.array([_ts(2024, 1, 2), _ts(2024, 1, 2)], type=_TIMESTAMP)
+    )
+    validated = checks.validate_changelog(table)
+    assert "updated_at" in validated.column_names

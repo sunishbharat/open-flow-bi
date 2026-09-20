@@ -7,8 +7,8 @@ from openflowbi.pipeline.source import _jql
 
 
 def test_jql_without_cursor_sorts_by_created():
-    # No incremental cursor in play (e.g. issue_changelog, which isn't
-    # incremental in M5) - unchanged from M3/M4 behaviour.
+    # No incremental cursor in play (e.g. a first-ever run, before any
+    # watermark exists) - unchanged from M3/M4 behaviour.
     assert _jql("KAFKA") == "project = KAFKA order by created asc"
     assert _jql(None) == "order by created asc"
 

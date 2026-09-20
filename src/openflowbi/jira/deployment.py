@@ -1,4 +1,6 @@
+import re
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import pendulum
 from dlt.sources.helpers.rest_client import RESTClient
@@ -11,6 +13,7 @@ class DeploymentProfile:
     base_url: str
     version: str
     auth: AuthConfigBase
+    instance_id: str
 
 
 def select_auth(
@@ -30,12 +33,26 @@ def select_auth(
     return BearerTokenAuth(pat)
 
 
+def derive_instance_id(base_url: str) -> str:
+    """Derive a stable, human-readable instance_id slug from a base URL's host.
+
+    Pure — no network, unit-testable directly. Used as the default when
+    FLOWBI_JIRA_INSTANCE_ID isn't set (docs/phase2-postgres-design.md §7),
+    e.g. https://issues.apache.org/jira -> issues-apache-org. instance_id
+    becomes part of every Postgres primary key, so it is derived from the
+    host alone — stable across a re-run even if the path or scheme changes.
+    """
+    host = urlparse(base_url).hostname or base_url
+    return re.sub(r"[^a-z0-9]+", "-", host.lower()).strip("-")
+
+
 def detect(
     base_url: str,
     *,
     email: str | None = None,
     api_token: str | None = None,
     pat: str | None = None,
+    instance_id: str | None = None,
 ) -> DeploymentProfile:
     """Detect Cloud vs Server/DC via /serverInfo and select the matching auth strategy.
 
@@ -53,6 +70,7 @@ def detect(
         base_url=base_url,
         version=info.get("version", "unknown"),
         auth=select_auth(is_cloud, email=email, api_token=api_token, pat=pat),
+        instance_id=instance_id or derive_instance_id(base_url),
     )
 
 

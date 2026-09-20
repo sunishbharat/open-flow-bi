@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     jira_api_token: str | None = None
     jira_pat: str | None = None
     jira_project: str | None = None
+    # Phase 2 (docs/phase2-postgres-design.md §7): stable slug, part of every
+    # Postgres primary key. Optional — deployment.derive_instance_id() falls
+    # back to a slug of the base URL's host when unset.
+    jira_instance_id: str | None = None
     jira_incremental_start: str = DEFAULT_INCREMENTAL_START
     # Phase 2 (docs/phase2-postgres-design.md §4.4): the single user-facing
     # surface for the Postgres DSN, handed to dlt explicitly rather than
