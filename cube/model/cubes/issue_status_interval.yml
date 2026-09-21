@@ -1,0 +1,69 @@
+cubes:
+  - name: issue_status_interval
+    sql_table: analytics.issue_status_interval
+
+    # Full path (docs/phase4-cube-dashboard-design.md §4.3), added now that
+    # Phase 3a ships this table (transform/runner.py). Additive: doesn't
+    # replace the `issues` cube - joined from that cube instead of here (see
+    # issues.yml's own comment on why the join is declared on that side, not
+    # this one). No existing Superset chart built against the `flow` view
+    # needs to change, only cube/model/views/flow.yml's include list (§2's
+    # "shape doesn't change" claim).
+
+    dimensions:
+      - name: interval_id
+        # No single-column surrogate key exists (the real PK is
+        # instance_id+issue_id+seq) - Cube needs exactly one primary_key
+        # dimension, so concatenate it into one string rather than adding a
+        # generated column to the table for this alone.
+        sql: "{CUBE}.instance_id || ':' || {CUBE}.issue_id || ':' || {CUBE}.seq"
+        type: string
+        primary_key: true
+
+      # Needed as real, named dimensions (not just raw columns folded into
+      # interval_id above) because issues.yml's join to this cube references
+      # them by member name (`{issue_status_interval.issue_id}`) — found live
+      # that a join's `sql` can reference the declaring cube's own columns
+      # via `{CUBE}.col` with no dimension required, but referencing the
+      # *other* side that way needs an actual declared member, or Cube fails
+      # with "... cannot be resolved. There's no such member or cube."
+      - name: issue_id
+        sql: issue_id
+        type: number
+
+      - name: instance_id
+        sql: instance_id
+        type: string
+
+      - name: status_id
+        sql: status_id
+        type: string
+
+      - name: status_name
+        # docs/phase3-field-selection-design.md §2's known limitation: no
+        # status_category here (the changelog only carries display names for
+        # historical statuses, not a category - capturing that needs a
+        # separate status-scheme fetch, not built yet). Filter/group by
+        # status_name until that lands.
+        sql: status_name
+        type: string
+
+      - name: entered_at
+        sql: entered_at
+        type: time
+
+      - name: exited_at
+        sql: exited_at
+        type: time
+
+    measures:
+      - name: count
+        type: count
+
+      - name: total_duration_seconds
+        sql: duration_seconds
+        type: sum
+
+      - name: avg_duration_days
+        sql: "duration_seconds / 86400.0"
+        type: avg

@@ -23,13 +23,24 @@ if not settings.postgres_dsn:
     raise RuntimeError("FLOWBI_POSTGRES_DSN is required to run Alembic migrations")
 config.set_main_option("sqlalchemy.url", settings.postgres_dsn)
 
-# P2-D1 (docs/phase2-postgres-design.md §2/§5): Alembic owns flowbi_ops and,
-# later, analytics. It must be blind to jira_raw — dlt reconciles that schema
-# against its own stored schema on every run, and an out-of-band ALTER TABLE
-# from Alembic would make dlt's schema and the database disagree.
+# P2-D1 (docs/phase2-postgres-design.md §2/§5): Alembic owns flowbi_ops. It
+# must be blind to jira_raw — dlt reconciles that schema against its own
+# stored schema on every run, and an out-of-band ALTER TABLE from Alembic
+# would make dlt's schema and the database disagree.
+#
+# `analytics` is Alembic-*created* (migrations/versions/c44c33c8584c) but,
+# since Phase 3a, no longer Alembic-*compared*: analytics.issue's promoted
+# columns and transform/runner.py's dynamically-created bridge tables
+# (src/openflowbi/ops/analytics_tables.py's own docstring) are runtime-managed,
+# not migration-managed, for exactly the same reason jira_raw is excluded —
+# an out-of-band schema Alembic doesn't fully control would otherwise be
+# "drift" `alembic check`/`--autogenerate` tries to remove forever. Hand-written
+# migrations against `analytics` (schema="analytics" in op.create_table(...))
+# still work fine either way — TARGET_SCHEMAS only gates autogenerate
+# comparison, never migration execution.
 target_metadata = ops_metadata
 
-TARGET_SCHEMAS = {"flowbi_ops", "analytics"}
+TARGET_SCHEMAS = {"flowbi_ops"}
 
 
 def include_name(name, type_, parent_names):

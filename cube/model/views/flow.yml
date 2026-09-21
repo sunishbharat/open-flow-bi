@@ -15,11 +15,24 @@ views:
           - updated_at
           - count
 
-      # Uncomment once Phase 3a ships analytics.issue_status_interval and the
-      # matching cube (docs/phase4-cube-dashboard-design.md §4.3/§4.4) — no
-      # existing Superset chart built against this view needs to change,
-      # only this file, per that doc's §2 "the shape doesn't change" claim.
-      # - join_path: issues.issue_status_interval
-      #   includes:
-      #     - cycle_time_days
-      #     - total_duration_seconds
+      # Phase 3a is done (docs/phase3-field-selection-design.md 3a.3/3a.4) —
+      # analytics.issue_status_interval exists, built by `flowbi transform`.
+      # No existing Superset chart built against this view needed to change,
+      # only this file (docs/phase4-cube-dashboard-design.md §2's "the shape
+      # doesn't change" claim).
+      #
+      # status_name is aliased: `issues.status_name` (above) is the issue's
+      # *current* status; this cube's status_name is whichever status a given
+      # interval *row* represents (a past one, for a closed interval) - two
+      # different things that happen to share a name across cubes. Cube's
+      # view compiler rejects the collision outright ("Included member
+      # 'status_name' conflicts with existing member of 'flow'") rather than
+      # silently picking one, found live wiring this up in Superset.
+      - join_path: issues.issue_status_interval
+        includes:
+          - name: status_name
+            alias: interval_status_name
+          - entered_at
+          - exited_at
+          - total_duration_seconds
+          - avg_duration_days

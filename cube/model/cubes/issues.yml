@@ -7,6 +7,21 @@ cubes:
     # (§6 of that doc). No Phase 3 dependency. Every cube needs a
     # primary_key or a later one-to-many join silently inflates counts
     # (open-flow-bi-repo-structure_1.md §4's modeling rule).
+    #
+    # The join to issue_status_interval is declared HERE, not on that cube,
+    # even though issue_status_interval is the "many" side - found live that
+    # Cube's SQL API join-graph builder needs the edge declared in the same
+    # direction as the flow view's `join_path: issues.issue_status_interval`
+    # (§4.4 below), or it fails with "Can't find join path to join
+    # 'issues,issue_status_interval'" the moment a query selects only
+    # issue_status_interval-side members - even though the same join
+    # resolves fine when issue_status_interval is queried on its own,
+    # outside the view.
+    joins:
+      - name: issue_status_interval
+        relationship: one_to_many
+        sql: "{CUBE}.issue_id = {issue_status_interval.issue_id} AND {CUBE}.instance_id = {issue_status_interval.instance_id}"
+
     dimensions:
       - name: issue_id
         sql: issue_id

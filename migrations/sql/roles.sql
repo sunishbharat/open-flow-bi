@@ -37,6 +37,16 @@ GRANT CREATE, USAGE ON SCHEMA flowbi_ops TO flowbi_writer;
 -- to bring new ones into existence.
 GRANT CREATE ON DATABASE openflowbi TO flowbi_writer;
 
+-- Phase 3a.3/3a.4: transform/runner.py writes analytics.issue_status_interval
+-- and analytics.issue (including dynamically ALTER TABLE ADD COLUMN / CREATE
+-- TABLE for promoted columns and bridge tables) using whatever role
+-- FLOWBI_POSTGRES_DSN names. The documented local default is the bootstrap
+-- superuser itself (.env.example), which already owns everything - this
+-- grant only matters for a hardened deployment that points FLOWBI_POSTGRES_DSN
+-- at flowbi_writer specifically, which otherwise has no privilege on
+-- `analytics` at all.
+GRANT CREATE, USAGE ON SCHEMA analytics TO flowbi_writer;
+
 -- cube_reader: Phase 3+ (Cube itself is out of scope now), created here so
 -- the read/write boundary is real from day one rather than retrofitted.
 CREATE ROLE cube_reader LOGIN PASSWORD :'reader_pw';
