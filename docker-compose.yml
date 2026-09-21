@@ -11,3 +11,62 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U flowbi"]
       interval: 2s
+
+  # docs/phase4-cube-dashboard-design.md §5/P4-D2. Local dev only — Cube
+  # Store (pre-aggregations) intentionally not added here; nothing in the
+  # fast-path model needs it yet.
+  cube:
+    image: cubejs/cube:latest
+    ports:
+      - "4000:4000"     # REST API + Playground
+      - "15432:15432"   # Postgres-wire SQL API — what Superset connects to (M9a.2)
+    environment:
+      CUBEJS_DB_TYPE: postgres
+      CUBEJS_DB_HOST: postgres
+      CUBEJS_DB_PORT: "5432"
+      CUBEJS_DB_NAME: openflowbi
+      CUBEJS_DB_USER: cube_reader
+      CUBEJS_DB_PASS: ${CUBE_READER_PW}
+      # P4-D4: local-only, authentication bypass — never set this outside
+      # docker-compose. See cube/README.md.
+      CUBEJS_DEV_MODE: "true"
+      # Credentials for the SQL API itself (distinct from CUBEJS_DB_* above,
+      # which is Cube's own connection *to* Postgres). Set explicitly rather
+      # than relying on dev-mode's auth bypass extending to this port too —
+      # unverified whether it does, and cheap to just set it.
+      CUBEJS_SQL_USER: ${CUBE_SQL_USER}
+      CUBEJS_SQL_PASSWORD: ${CUBE_SQL_PASSWORD}
+    volumes:
+      - ./cube:/cube/conf
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # docs/phase4-cube-dashboard-design.md §1/M9a.2. The actual dashboard-
+  # building surface (P4-D5) — Cube's own Playground is dev-only, not this.
+  # SQLite metadata store (default image behavior) is fine for local dev;
+  # revisit if this ever needs to survive a container rebuild for real.
+  superset:
+    image: apache/superset:latest
+    # The image's default user (uid 1000) can't write into /app/.venv, where
+    # the psycopg2-binary driver install below needs to land (found live:
+    # PermissionError installing as the default user). Root, local dev only.
+    user: root
+    ports: ["8088:8088"]
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+    volumes:
+      - superset_home:/app/superset_home
+    entrypoint: >
+      /bin/bash -c "
+      pip install --no-cache-dir --target=/app/.venv/lib/python3.10/site-packages psycopg2-binary &&
+      superset db upgrade &&
+      superset fab create-admin --username admin --firstname Admin --lastname Admin --email admin@openflowbi.local --password ${SUPERSET_ADMIN_PW} &&
+      superset init &&
+      /usr/bin/run-server.sh"
+    depends_on:
+      cube:
+        condition: service_started
+
+volumes:
+  superset_home:

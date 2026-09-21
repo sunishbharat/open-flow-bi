@@ -2,10 +2,15 @@
 
 Self hosted flow metrics for jira with full changelog, history, flow metrics modelled in Cube.
 
-Right now only the **extractor** is built: a `flowbi` CLI that pulls Jira issues and their full
-changelog (Cloud or Server/DC) into Parquet files via [dlt](https://github.com/dlt-hub/dlt). See
-`CLAUDE.md` for the working rules and `docs/library-decision-register.md` for the architecture.
-Current build status: `docs/session-status-2026-09-18.md`.
+The **extractor** (Jira issues + full changelog, Cloud or Server/DC, via
+[dlt](https://github.com/dlt-hub/dlt)) and its **Postgres destination** (idempotent, concurrency-safe,
+with SQL quality gates) are both built. On top of that, a **Cube + Superset dashboard** now runs
+locally against the real extracted data — see "Cube + Superset dashboard (Phase 4)" below. `transform/`
+(materialized status intervals, needed for cycle-time/lead-time measures) is still design-only, not
+built — see "What's not built yet" at the end of this file.
+
+See `CLAUDE.md` for the working rules and `docs/library-decision-register.md` for the extractor's
+architecture. Current build status: `docs/session-status-2026-09-18.md`.
 
 ## Setup
 
@@ -24,6 +29,10 @@ cp .env.example .env   # prefilled with Apache's public Jira, works as-is - see 
 | `FLOWBI_JIRA_PROJECT` | optional | scopes extraction to one project key, e.g. `KAFKA` |
 | `FLOWBI_JIRA_INCREMENTAL_START` | optional | ISO datetime floor for `extract issues`' first run (default: epoch, i.e. everything) |
 | `FLOWBI_JIRA_INSTANCE_ID` | optional | stable slug, part of every Postgres primary key (default: derived from the base URL's host, e.g. `issues-apache-org`) |
+| `FLOWBI_POSTGRES_DSN` | Postgres/Cube/Superset | connection string for the local `docker-compose` Postgres, prefilled for host port `5433` |
+| `CUBE_READER_PW` | Cube dashboard | password for the `cube_reader` Postgres role (created by `migrations/sql/roles.sql` — see below) |
+| `CUBE_SQL_USER` / `CUBE_SQL_PASSWORD` | Cube dashboard | credentials for Cube's own Postgres-wire SQL API — what Superset authenticates with |
+| `SUPERSET_SECRET_KEY` / `SUPERSET_ADMIN_PW` | Cube dashboard | local Superset instance; generate a real secret with `python -c "import secrets; print(secrets.token_urlsafe(42))"` |
 
 ## Quickstart — try it in under a minute
 
@@ -166,6 +175,155 @@ As with the Parquet output below, **never hand-edit anything under `jira_raw` or
 against its own stored schema on every run, so an out-of-band edit will make dlt's schema and the
 database disagree (`CLAUDE.md` non-negotiable rule 2). `flowbi_ops` is Alembic's; edit it only
 through a migration.
+
+## Cube + Superset dashboard (Phase 4)
+
+A real dashboard, running locally against the Postgres data above — no Jira credential, no SQL, no
+custom-field promotion required. Full design: `docs/phase4-cube-dashboard-design.md`; what actually
+got built and the bugs found doing it: `docs/session-status-2026-09-18.md`'s "Phase 4" section.
+
+This is the **fast path**: Cube reads `jira_raw.issues` directly (via `fields->>'…'` JSON
+extraction for `project_key`/`status_name`/`assignee_name`), so it needs only the Postgres
+destination above — not `transform/`'s materialized intervals, which don't exist yet (see "What's
+not built yet"). That means simple counts/breakdowns by any field work today; cycle-time/lead-time
+measures don't, until `transform/` lands.
+
+**One-time setup**, if you haven't run it on this database yet:
+
+```bash
+docker compose up -d postgres              # if not already running
+uv run alembic upgrade head                # creates the (empty) analytics schema, among others
+docker exec -it open-flow-bi-postgres-1 psql -U flowbi -d openflowbi \
+  -v writer_pw=some_writer_password -v reader_pw=some_reader_password \
+  -f migrations/sql/roles.sql
+```
+
+(`roles.sql` creates `flowbi_writer`/`cube_reader` — the `cube` service below authenticates as
+`cube_reader`. **Don't wrap the `-v` values in extra quotes** — the script's own `PASSWORD
+:'reader_pw'` already quotes them; doing both bakes literal quote characters into the password,
+found the hard way — see the design doc's session-status section. Whatever you pick for
+`reader_pw` above must match `CUBE_READER_PW` in `.env`.)
+
+**Then grant `cube_reader` access to the raw tables it actually reads** — the fast-path cube reads
+`jira_raw.issues` directly (§2 below), which `roles.sql` deliberately doesn't grant (that script
+runs once at bootstrap, often before `jira_raw` exists at all). Run this only after at least one
+`flowbi extract issues --destination postgres` (or `extract changelog`) has landed data — it grants
+each table independently and skips whichever one doesn't exist yet, so partial extraction is fine:
+
+```bash
+docker exec -it open-flow-bi-postgres-1 psql -U flowbi -d openflowbi \
+  -f migrations/sql/cube_reader_grants.sql
+```
+
+**Bring up Cube and Superset:**
+
+```bash
+docker compose up -d cube superset
+```
+
+First boot takes a minute or two — Superset runs its own DB migrations and installs a Postgres
+driver at container startup (the official `apache/superset` image ships without one; already wired
+into `docker-compose.yml`'s `superset` service, nothing to do manually). Watch progress with
+`docker logs -f open-flow-bi-superset-1` if curious.
+
+**Cube Playground** (schema debugging only — never expose this beyond local dev, `CUBEJS_DEV_MODE=true`
+disables auth entirely): http://localhost:4000. A quick REST check that the model loaded correctly:
+
+```bash
+curl -s -G http://localhost:4000/cubejs-api/v1/load \
+  --data-urlencode 'query={"measures":["flow.count"],"dimensions":["flow.project_key","flow.status_name"]}'
+```
+
+**Build a chart in Superset** — this is the actual dashboard-building surface, http://localhost:8088:
+
+1. Log in: `admin` / your `.env`'s `SUPERSET_ADMIN_PW`.
+2. **Settings → Database Connections → + Database → PostgreSQL**, SQLAlchemy URI:
+   `postgresql://<CUBE_SQL_USER>:<CUBE_SQL_PASSWORD>@cube:15432/db` (host is `cube`, the
+   docker-compose service name — not `localhost`). Test Connection, then Save.
+3. **Datasets → + Dataset** — schema `public`, table `flow` (the view; pick this over the raw
+   `issues` cube).
+4. **Charts → + Chart** — dataset `flow`, e.g. a Bar Chart with metric **Count** and dimension
+   **status_name** or **project_key**.
+5. Save it to a dashboard. Reloading the page should show it persisted (Superset's own SQLite
+   metadata store, independent of Cube/Postgres).
+
+`cube/model/` (`issues.yml`, `flow.yml`) is the model itself — see `cube/README.md` for the
+modeling rules it follows and what's deliberately not built yet (`cube.py`/JWT auth, row-level
+security).
+
+## Creating a filter rule and a chart (new user walkthrough)
+
+Worked example: **"all issues that are `Open` and priority `Critical` or `Major`"**, as a bar
+chart. Everything below assumes the Cube + Superset dashboard above is already up
+(`docker compose up -d postgres cube superset`) and has real data in `jira_raw.issues`.
+
+There are two layers, and new users usually only need the second one:
+
+1. **The Cube model** (`cube/model/`) decides which fields are *queryable at all* — it turns raw
+   JSON in `jira_raw.issues.fields` into named dimensions like `status_name`. This only needs
+   editing once per field, by whoever maintains the model.
+2. **Superset** is where you pick filters, group-bys and a chart type on top of whatever the model
+   already exposes. This is what most "make me a chart" requests actually need — no code, no
+   restart.
+
+### Step 1 — check whether the field you want is already exposed
+
+Open http://localhost:4000/cubejs-api/v1/meta (Cube Playground's own API) or run:
+
+```bash
+curl -s http://localhost:4000/cubejs-api/v1/meta | grep -o '"flow\.[a-z_]*"' | sort -u
+```
+
+Today's `flow` view exposes: `flow.issue_key`, `flow.project_key`, `flow.status_name`,
+`flow.assignee_name`, `flow.priority_name`, `flow.created_at`, `flow.updated_at`, `flow.count`. For
+"status Open, priority Critical/Major" both `status_name` and `priority_name` are already there —
+skip to Step 2. If the field you need *isn't* listed (e.g. a custom field, or a different top-level
+Jira field), add it to `cube/model/cubes/issues.yml` first, following the pattern already used for
+`priority_name`:
+
+```yaml
+      - name: priority_name
+        # Fast-path: reads jira_raw.issues.fields directly (JSONB passthrough,
+        # CLAUDE.md rule 3) — no Postgres migration or re-extraction needed.
+        sql: "{CUBE}.fields->'priority'->>'name'"
+        type: string
+```
+
+then add the new dimension's `name` to `cube/model/views/flow.yml`'s `includes:` list (this is
+what makes it show up in Superset — a dimension only on the raw `issues` cube, not the view, stays
+invisible there). Cube reads `cube/` off disk on every query (`docker-compose.yml` bind-mounts it,
+no rebuild/restart needed) — the next query picks the change up immediately. Sanity-check with a
+direct REST call before touching Superset at all:
+
+```bash
+curl -s -G http://localhost:4000/cubejs-api/v1/load \
+  --data-urlencode 'query={"measures":["flow.count"],"dimensions":["flow.project_key","flow.priority_name"],"filters":[{"member":"flow.status_name","operator":"equals","values":["Open"]},{"member":"flow.priority_name","operator":"equals","values":["Critical","Major"]}]}'
+```
+
+A non-empty `"data": [...]` array means the filter rule works — worth doing before building the
+chart, since a Superset screen won't tell you whether zero rows means "no matching issues" or "the
+model/filter is wrong".
+
+**Caveat, same as `status_name`**: `priority_name` filters on Jira's display string, not a stable
+id — a renamed priority scheme would retroactively change what this rule matches. Fine for a first
+dashboard; the fix arrives with the full-path cube once Phase 3a lands (see "What's not built yet").
+
+### Step 2 — build the rule as a chart in Superset (http://localhost:8088)
+
+1. **Charts → + Chart**, dataset **`flow`**, choose a chart type — Bar Chart or Table both work
+   well for a triage-style view like this one.
+2. **Filters** (this is the "rule" — add one row per condition, they combine with AND):
+   - `status_name` — *Equal to* — `Open`
+   - `priority_name` — *Is in* — `Critical`, `Major`
+3. **Dimension** — how to group the results, e.g. `project_key` or `assignee_name`.
+4. **Metric** — `Count`.
+5. Run the query (preview updates live), then **Save** — name it, and either create a new
+   dashboard or add it to an existing one.
+
+Reloading the dashboard should show the chart with the same rule still applied — filters are saved
+as part of the chart, not re-entered each time. To change the rule later (different status,
+different priorities, a date range), edit the same chart's filters and re-save; no Cube or Postgres
+change is needed unless the field itself isn't exposed yet (Step 1).
 
 ## Inspecting output
 
@@ -432,3 +590,39 @@ To watch the kill/resume behaviour live rather than via the mocked test, interru
 `extract issues` run (Ctrl-C, same env vars as above) mid-run before it prints a result, then check
 the watermark above hasn't moved from its pre-run value and `out/jira_raw/issues/*.parquet` has no
 new file — then re-run and confirm it fetches from that same unmoved watermark.
+
+### Testing the cube/ schema smoke job (M9a.3)
+
+`.github/workflows/ci.yml`'s `cube-smoke` job proves `cube/model/` actually compiles and the `flow`
+view returns real rows — the thing `pytest`/`ruff`/`mypy` can't catch, since `cube/` is a
+volume-mounted config directory, not Python (`open-flow-bi-repo-structure_1.md` §4). It runs the same
+steps a real operator runs (`alembic upgrade head`, `roles.sql`, `cube_reader_grants.sql`), loads a
+small hand-built fixture straight into `jira_raw.issues` (`scripts/seed_cube_smoke_fixture.py` —
+same `pipeline.run(..., destination="postgres")` path the CLI uses, with Jira HTTP mocked, not a real
+extraction), starts a throwaway Cube container against `cube/model/`, and asserts the `flow` view's
+shape and row total match the fixture (`scripts/query_cube_smoke.py`) — not hard-coded production
+values. To run it locally: bring up a throwaway Postgres, then
+
+```bash
+FLOWBI_POSTGRES_DSN=postgresql://flowbi:flowbi@localhost:<port>/openflowbi uv run alembic upgrade head
+docker exec -i <postgres-container> psql -U flowbi -d openflowbi \
+  -v writer_pw=x -v reader_pw=x < migrations/sql/roles.sql
+uv run python scripts/seed_cube_smoke_fixture.py      # prints the fixture row count on its last line
+docker exec -i <postgres-container> psql -U flowbi -d openflowbi < migrations/sql/cube_reader_grants.sql
+# start cubejs/cube:latest with CUBEJS_DB_USER=cube_reader against that Postgres,
+# cube/model mounted at /cube/conf/model, then:
+EXPECTED_TOTAL=<count from seed step> uv run python scripts/query_cube_smoke.py
+```
+
+## What's not built yet
+
+- **`transform/` and `issue_status_interval`** (Phase 3) — materialized status intervals, needed for
+  cycle-time/lead-time measures in Cube. Design only: `docs/phase3-field-selection-design.md`.
+  Not required for the dashboard above to work — only for that specific class of measure.
+- **The visual field-promotion admin UI** (Phase 3b) — self-service promotion of raw JSON fields
+  into indexed Postgres columns. Optional per its own design doc (§1A): skip it unless fill-rate
+  discovery or non-engineer self-service is actually worth building.
+- **Row-level security / `perm-sync`** — the Cube+Superset dashboard above is single-service-account,
+  see-everything. Fine for one operator; not acceptable once a second user with narrower Jira
+  visibility needs access — see `docs/phase4-cube-dashboard-design.md` P4-D6.
+- **Cloud Foundry deployment** — everything above runs via local `docker-compose` only.

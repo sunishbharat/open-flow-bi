@@ -6,14 +6,29 @@
 -- it — Cloud Foundry manifests are out of scope for now, per CLAUDE.md).
 --
 -- Run as a superuser (e.g. the docker-compose `flowbi` bootstrap user):
---   psql "$FLOWBI_POSTGRES_DSN" -v writer_pw='...' -v reader_pw='...' -f migrations/sql/roles.sql
+--   psql "$FLOWBI_POSTGRES_DSN" -v writer_pw=plaintext_pw -v reader_pw=plaintext_pw -f migrations/sql/roles.sql
+--
+-- Found running this live (2026-09-20): do NOT wrap the -v value in its own
+-- single quotes (-v reader_pw="'...'"). This script's `PASSWORD :'reader_pw'`
+-- already asks psql to quote the substituted value — quoting it again at the
+-- shell level bakes literal quote characters into the password itself.
 
 -- flowbi_writer: dlt needs to create and alter its own schema, and Alembic
 -- needs the same for flowbi_ops. dlt's docs note the loader user is simplest
 -- as the schema owner — compatible with least privilege as long as it owns
 -- only jira_raw (+ its per-pipeline staging schemas) and flowbi_ops, not the
 -- whole database.
+--
+-- Found running this live on a genuinely fresh database (2026-09-21): this
+-- script was previously assumed to run *before* any extraction, but
+-- `GRANT ... ON SCHEMA jira_raw` / `ALTER SCHEMA jira_raw OWNER TO ...` both
+-- fail with "schema does not exist" if no extraction has created jira_raw
+-- yet (dlt owns creating it — CLAUDE.md rule 2 — this script never should,
+-- and still doesn't: `CREATE SCHEMA IF NOT EXISTS` below is a no-op on a
+-- database where jira_raw already exists from a prior `flowbi extract`
+-- run, and only bootstraps the empty schema + ownership on a fresh one).
 CREATE ROLE flowbi_writer LOGIN PASSWORD :'writer_pw';
+CREATE SCHEMA IF NOT EXISTS jira_raw AUTHORIZATION flowbi_writer;
 GRANT CREATE, USAGE ON SCHEMA jira_raw TO flowbi_writer;
 ALTER SCHEMA jira_raw OWNER TO flowbi_writer;
 GRANT CREATE, USAGE ON SCHEMA flowbi_ops TO flowbi_writer;

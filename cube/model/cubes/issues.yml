@@ -1,0 +1,64 @@
+cubes:
+  - name: issues
+    sql_table: jira_raw.issues
+
+    # Fast path (docs/phase4-cube-dashboard-design.md §2, §4.2): reads
+    # jira_raw directly via cube_reader's read-only grant on this one table
+    # (§6 of that doc). No Phase 3 dependency. Every cube needs a
+    # primary_key or a later one-to-many join silently inflates counts
+    # (open-flow-bi-repo-structure_1.md §4's modeling rule).
+    dimensions:
+      - name: issue_id
+        sql: issue_id
+        type: number
+        primary_key: true
+
+      - name: issue_key
+        sql: issue_key
+        type: string
+
+      - name: instance_id
+        sql: instance_id
+        type: string
+
+      - name: project_key
+        # jira_raw.fields is jsonb passthrough (CLAUDE.md rule 3) — extracted
+        # here, not promoted to a column, per phase3-field-selection-design.md
+        # §1A: a dimension can read JSON directly without a promotion engine.
+        sql: "{CUBE}.fields->'project'->>'key'"
+        type: string
+
+      - name: status_name
+        # Fast-path-only choice: grouped by display string, not status id,
+        # because the fast path has no status-id lookup table. A status
+        # rename will retroactively change historical grouping — acceptable
+        # for a first dashboard, called out here and in phase4's open
+        # question #1 so it isn't mistaken for an oversight. Fixed when the
+        # full-path issue_status_interval cube (Phase 3a output) lands.
+        sql: "{CUBE}.fields->'status'->>'name'"
+        type: string
+
+      - name: assignee_name
+        sql: "{CUBE}.fields->'assignee'->>'displayName'"
+        type: string
+
+      - name: priority_name
+        # Same fast-path caveat as status_name above: grouped/filtered by
+        # display string (Jira has no stable priority id exposed here),
+        # not an id - a priority scheme rename would retroactively change
+        # historical filtering. Acceptable for now, same reasoning as
+        # status_name's own comment.
+        sql: "{CUBE}.fields->'priority'->>'name'"
+        type: string
+
+      - name: created_at
+        sql: created_at
+        type: time
+
+      - name: updated_at
+        sql: updated_at
+        type: time
+
+    measures:
+      - name: count
+        type: count

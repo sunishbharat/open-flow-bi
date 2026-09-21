@@ -1,0 +1,25 @@
+views:
+  - name: flow
+    description: >
+      Fast-path view over raw Jira issues (docs/phase4-cube-dashboard-design.md).
+      What a Superset user picks first — not the raw `issues` cube directly.
+    cubes:
+      - join_path: issues
+        includes:
+          - issue_key
+          - project_key
+          - status_name
+          - assignee_name
+          - priority_name
+          - created_at
+          - updated_at
+          - count
+
+      # Uncomment once Phase 3a ships analytics.issue_status_interval and the
+      # matching cube (docs/phase4-cube-dashboard-design.md §4.3/§4.4) — no
+      # existing Superset chart built against this view needs to change,
+      # only this file, per that doc's §2 "the shape doesn't change" claim.
+      # - join_path: issues.issue_status_interval
+      #   includes:
+      #     - cycle_time_days
+      #     - total_duration_seconds

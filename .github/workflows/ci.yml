@@ -40,3 +40,106 @@ jobs:
       # needs no fixture wiring").
       - name: pytest (postgres, testcontainers)
         run: uv run pytest -q -m postgres
+
+  # M9a.3 (docs/phase4-cube-dashboard-design.md §7): cube/ is isolated from
+  # src/ at runtime (it's a volume-mounted config directory, not a Python
+  # package - open-flow-bi-repo-structure_1.md §4), and that isolation is
+  # wrong in CI: an Alembic column rename or a bad cube/model/ edit would
+  # otherwise break every dashboard with a green build. This job starts
+  # Postgres, runs the same migration/role/grant scripts a real operator
+  # runs (README.md "Cube + Superset dashboard" section), loads a fixture
+  # straight into jira_raw.issues, starts Cube against cube/, and issues one
+  # smoke query against the `flow` view - asserting shape, not production
+  # values, per the repo-structure doc's own description of this job.
+  cube-smoke:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: openflowbi
+          POSTGRES_USER: flowbi
+          POSTGRES_PASSWORD: flowbi
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U flowbi"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      FLOWBI_POSTGRES_DSN: postgresql://flowbi:flowbi@localhost:5432/openflowbi
+      CUBE_READER_PW: smoke-only-reader-pw
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: ruff (scripts)
+        run: uv run ruff check scripts
+
+      # ubuntu-latest ships a psql client, but pin the install so this job
+      # doesn't silently start failing if that ever stops being true.
+      - name: ensure psql client
+        run: command -v psql || sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: alembic upgrade head
+        run: uv run alembic upgrade head
+
+      - name: create roles (flowbi_writer, cube_reader)
+        # Same script and invocation shape README.md documents for a real
+        # operator - dummy passwords, this Postgres is thrown away at the
+        # end of the job.
+        run: |
+          psql "$FLOWBI_POSTGRES_DSN" \
+            -v writer_pw=smoke-only-writer-pw -v reader_pw="$CUBE_READER_PW" \
+            -f migrations/sql/roles.sql
+
+      - name: seed fixture issues into jira_raw
+        id: seed
+        run: |
+          total=$(uv run python scripts/seed_cube_smoke_fixture.py | tail -1)
+          echo "EXPECTED_TOTAL=$total" >> "$GITHUB_ENV"
+
+      - name: grant cube_reader access to jira_raw
+        # Must run after the seed step above: jira_raw doesn't exist until
+        # dlt's first load creates it (migrations/sql/cube_reader_grants.sql).
+        run: psql "$FLOWBI_POSTGRES_DSN" -f migrations/sql/cube_reader_grants.sql
+
+      - name: start Cube against cube/
+        run: |
+          docker run -d --name cube-smoke \
+            --network host \
+            -v "${{ github.workspace }}/cube/model:/cube/conf/model" \
+            -e CUBEJS_DB_TYPE=postgres \
+            -e CUBEJS_DB_HOST=localhost \
+            -e CUBEJS_DB_PORT=5432 \
+            -e CUBEJS_DB_NAME=openflowbi \
+            -e CUBEJS_DB_USER=cube_reader \
+            -e CUBEJS_DB_PASS="$CUBE_READER_PW" \
+            -e CUBEJS_DEV_MODE=true \
+            cubejs/cube:latest
+
+      - name: wait for Cube to compile the model
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:4000/cubejs-api/v1/meta | grep -q '"name":"flow"'; then
+              echo "cube ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "cube never became ready" >&2
+          docker logs cube-smoke
+          exit 1
+
+      - name: smoke query against the flow view
+        run: uv run python scripts/query_cube_smoke.py
+
+      - name: cube logs
+        if: always()
+        run: docker logs cube-smoke || true
