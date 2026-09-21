@@ -1,9 +1,9 @@
 from logging.config import fileConfig
 
 from alembic import context
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import engine_from_config, pool, text
 
-from openflowbi.config import Settings
 from openflowbi.ops.tables import metadata as ops_metadata
 
 # this is the Alembic Config object, which provides
@@ -15,10 +15,21 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+
+class MigrationSettings(BaseSettings):
+    """Alembic only ever needs the DSN — the full CLI Settings requires
+    jira_base_url, which migrations (flowbi_ops/analytics only, never
+    jira_raw) have no business demanding."""
+
+    model_config = SettingsConfigDict(env_prefix="FLOWBI_", env_file=".env", extra="ignore")
+
+    postgres_dsn: str | None = None
+
+
 # Single user-facing DSN surface (docs/phase2-postgres-design.md §4.4) — the
 # same FLOWBI_POSTGRES_DSN pipeline/run.py hands to dlt, not a second URL
 # living only in alembic.ini.
-settings = Settings()  # type: ignore[call-arg]  # required fields resolved from env at runtime
+settings = MigrationSettings()
 if not settings.postgres_dsn:
     raise RuntimeError("FLOWBI_POSTGRES_DSN is required to run Alembic migrations")
 config.set_main_option("sqlalchemy.url", settings.postgres_dsn)
