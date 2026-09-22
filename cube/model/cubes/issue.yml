@@ -1,0 +1,68 @@
+cubes:
+  - name: issue
+    sql_table: analytics.issue
+
+    # Second half of the M9b full path (docs/phase4-cube-dashboard-design.md
+    # §4.3/§4.4; docs/phase3-field-selection-design.md §2.3) — exposes
+    # analytics.issue (Phase 3a.4's promoted-column wide table), the gap
+    # documented in README.md's "For developers" section as "no cube reads
+    # analytics.issue yet". Joined from issues.yml, not declared here, for
+    # the same reason issue_status_interval.yml's join moved there (see that
+    # cube's own comment) — the flow view's join_path direction has to match
+    # wherever the join edge is declared, or Cube's SQL API fails with
+    # "Can't find join path" the moment a query selects only this cube's
+    # members.
+    #
+    # Add one dimension per promoted column as fields get promoted — a
+    # one-line change, same as a Path B JSON-extraction dimension in
+    # issues.yml. resolution_name below is the first real example: promoted
+    # 2026-09-22 (`flowbi fields promote "Resolution" --column
+    # resolution_name --schema-type resolution` + `flowbi transform
+    # --rebuild-all`), real spread across 9910 issues (Fixed 5960, NULL
+    # (unresolved) 2050, Duplicate 701, Won't Fix 346, ... 21 distinct
+    # values), verified via `psql` against the real docker-compose Postgres.
+
+    dimensions:
+      - name: issue_ref
+        # Same pattern as issue_status_interval.yml's interval_id: no
+        # single-column surrogate key exists (the real PK is
+        # instance_id+issue_id), and Cube needs exactly one primary_key
+        # dimension.
+        sql: "{CUBE}.instance_id || ':' || {CUBE}.issue_id"
+        type: string
+        primary_key: true
+
+      - name: issue_id
+        # Declared as a real, named dimension (not just folded into
+        # issue_ref above) so issues.yml's join can reference it by member
+        # name — found live (issue_status_interval.yml) that a join's sql
+        # can reach {CUBE}.col on its own declaring side with no dimension
+        # required, but referencing the *other* side that way needs an
+        # actual declared member, or Cube fails with "... cannot be
+        # resolved. There's no such member or cube."
+        sql: issue_id
+        type: number
+
+      - name: instance_id
+        sql: instance_id
+        type: string
+
+      - name: rebuilt_at
+        # Freshness signal — when flowbi transform last touched this issue's
+        # promoted columns. Also the only non-key column guaranteed to exist
+        # regardless of what (if anything) is currently promoted, which is
+        # why it's the one dimension wired into the flow view below instead
+        # of a promoted column that may not exist on every instance.
+        sql: rebuilt_at
+        type: time
+
+      - name: resolution_name
+        # schema_type 'resolution' -> COALESCE(...->>'name', ...) at rebuild
+        # time (transform/runner.py:_extract_expr) — NULL means genuinely
+        # unresolved, not a missing/failed extraction.
+        sql: resolution_name
+        type: string
+
+    measures:
+      - name: count
+        type: count

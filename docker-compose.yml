@@ -57,9 +57,17 @@ services:
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
     volumes:
       - superset_home:/app/superset_home
+      # Persist the pip-installed driver across container restarts (below)
+      # instead of re-downloading it every `docker compose up` — found live
+      # (2026-09-22) that a plain container restart re-runs the install step
+      # from scratch since /app/.venv isn't otherwise persisted, and this
+      # machine's Norton TLS interception (see docs/session-status-*.md's
+      # blocker section) makes that pip install fail intermittently.
+      - superset_site_packages:/app/.venv/lib/python3.10/site-packages
     entrypoint: >
       /bin/bash -c "
-      pip install --no-cache-dir --target=/app/.venv/lib/python3.10/site-packages psycopg2-binary &&
+      (test -f /app/.venv/lib/python3.10/site-packages/psycopg2/__init__.py ||
+      pip install --no-cache-dir --target=/app/.venv/lib/python3.10/site-packages psycopg2-binary) &&
       superset db upgrade &&
       superset fab create-admin --username admin --firstname Admin --lastname Admin --email admin@openflowbi.local --password ${SUPERSET_ADMIN_PW} &&
       superset init &&
@@ -70,3 +78,4 @@ services:
 
 volumes:
   superset_home:
+  superset_site_packages:

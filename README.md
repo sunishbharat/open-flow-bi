@@ -229,10 +229,20 @@ your actual question:
    too if you want total time alongside the average
 4. Save
 
+### Example: a promoted field (resolution breakdown)
+
+`resolution_name` is a real promoted column (`analytics.issue`, via `flowbi fields promote
+"Resolution" --column resolution_name --schema-type resolution` + `flowbi transform --rebuild-all`) —
+unlike the fields above, which all read straight out of raw Jira JSON.
+
+1. **Charts → + Chart**, dataset `flow`, chart type e.g. Pie or Bar Chart
+2. Group by `resolution_name`, metric `Count`
+3. Save
+
 If the field you want to filter or group by isn't available yet, it needs adding to the Cube model
-first — see `cube/README.md`. If you add a new dataset over `flow` (rather than reusing an existing
-one), re-sync its columns from **Data → Datasets → Edit → Columns → Sync columns from source** after
-any Cube model change.
+first — see `cube/README.md` and "For developers" below. If you add a new dataset over `flow` (rather
+than reusing an existing one), re-sync its columns from **Data → Datasets → Edit → Columns → Sync
+columns from source** after any Cube model change.
 
 ## For developers: adding a new field/dimension to a report
 
@@ -254,10 +264,16 @@ small, manual YAML edit. Two paths, pick based on how the field will be used.
 3. `uv run flowbi transform --rebuild-all` — materializes `your_column_name` as a real column in
    `analytics.issue` (or a bridge table, for array-typed fields — see "Field discovery and
    materialization" above).
-4. Expose it in Cube — add a dimension to a cube reading `analytics.issue`, then add it to
-   `cube/model/views/flow.yml`'s `includes` list. **Current gap**: no cube reads `analytics.issue` yet
-   — only `analytics.issue_status_interval` is wired up (see below). Until that cube exists, step 4
-   means creating it, not just adding one line.
+4. Expose it in Cube — add a dimension to `cube/model/cubes/issue.yml` (reads `analytics.issue`, joined
+   onto `issues` the same way `issue_status_interval.yml` is), then add it to
+   `cube/model/views/flow.yml`'s `issues.issue` `includes` list — a one-line change in each file. The
+   `resolution_name` dimension already in both files is a working reference to copy:
+   ```yaml
+   # cube/model/cubes/issue.yml
+   - name: story_points
+     sql: story_points
+     type: number
+   ```
 5. In Superset: **Data → Datasets → `flow` → Edit → Columns → Sync columns from source**.
 6. Use the field in a chart.
 
@@ -276,15 +292,17 @@ No `flowbi fields promote`/`flowbi transform` needed. Cube's dev-mode Playground
 `./cube:/cube/conf`) picks up the file change automatically — no restart required unless something
 looks stale, in which case `docker compose restart cube` forces a clean recompile.
 
-### Known gap: `analytics.issue` isn't in the Cube model yet
+### `analytics.issue` is in the Cube model, with one real promoted field so far
 
-Only `analytics.issue_status_interval` (status/cycle-time data) is wired into `cube/model/`. Promoted
-custom fields (e.g. `story_points`) land in `analytics.issue` via `flowbi transform`, but nothing
-currently exposes that table as Cube dimensions/measures — so today, Path A's step 4 means writing a
-new cube (`sql_table: analytics.issue`, one dimension per promoted column, joined onto `issues` the
-same way `issue_status_interval.yml` is — see that file's own comments on why the join must be
-declared on `issues`, not the other cube, or Cube's SQL API fails with "Can't find join path"). Once
-that cube exists once, adding the next promoted field to it is a one-line change, same as Path B.
+`cube/model/cubes/issue.yml` (`sql_table: analytics.issue`, joined onto `issues`) exists and is wired
+into the `flow` view. `resolution_name` (promoted from Jira's `Resolution` field) is the first real
+example — group `flow` by `resolution_name` in Superset and you'll see the real spread across every
+extracted issue (`Fixed`, `Duplicate`, `Won't Fix`, a null bucket for genuinely unresolved issues,
+...). Adding the next promoted field is exactly Path A's step 4 above: one dimension line in
+`issue.yml`, one `includes` line in `flow.yml`.
+
+Remaining gap: bridge tables (`--target bridge_table`, e.g. `analytics.fix_version`) still have no Cube
+cube of their own — only the wide-table path above is wired up.
 
 ### Array-valued fields (Fix Version/s, Labels, Sprint, ...) need `--target bridge_table`
 

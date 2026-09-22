@@ -36,3 +36,13 @@ views:
           - exited_at
           - total_duration_seconds
           - avg_duration_days
+
+      # M9b full path, second cube (docs/phase4-cube-dashboard-design.md
+      # §4.3/§4.4). Add each promoted column here too, alongside its new
+      # dimension in issue.yml, as fields get promoted — resolution_name is
+      # the first real example (2026-09-22).
+      - join_path: issues.issue
+        includes:
+          - name: rebuilt_at
+            alias: issue_rebuilt_at
+          - resolution_name

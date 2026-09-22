@@ -22,6 +22,13 @@ cubes:
         relationship: one_to_many
         sql: "{CUBE}.issue_id = {issue_status_interval.issue_id} AND {CUBE}.instance_id = {issue_status_interval.instance_id}"
 
+      # Same join-direction reasoning as above: declared on this cube, not
+      # on issue.yml, so the flow view's `join_path: issues.issue` resolves
+      # regardless of which side's members a query actually selects.
+      - name: issue
+        relationship: one_to_one
+        sql: "{CUBE}.issue_id = {issue.issue_id} AND {CUBE}.instance_id = {issue.instance_id}"
+
     dimensions:
       - name: issue_id
         sql: issue_id
