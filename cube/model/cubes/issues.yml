@@ -29,6 +29,13 @@ cubes:
         relationship: one_to_one
         sql: "{CUBE}.issue_id = {issue.issue_id} AND {CUBE}.instance_id = {issue.instance_id}"
 
+      # Same join-direction reasoning again: declared on this cube, not on
+      # fix_version.yml, so `join_path: issues.fix_version` resolves.
+      # one_to_many because an issue can carry more than one fix version.
+      - name: fix_version
+        relationship: one_to_many
+        sql: "{CUBE}.issue_id = {fix_version.issue_id} AND {CUBE}.instance_id = {fix_version.instance_id}"
+
     dimensions:
       - name: issue_id
         sql: issue_id

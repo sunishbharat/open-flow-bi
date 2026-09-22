@@ -46,3 +46,18 @@ views:
           - name: rebuilt_at
             alias: issue_rebuilt_at
           - resolution_name
+
+      # Bridge-table cube for array-valued fields (README.md's "Array-valued
+      # fields" subsection) - fix_version.yml, closing the gap the "For
+      # developers" section flagged. `count` and `value` are aliased: this
+      # cube's own `count` measure counts (issue, fix-version) pairs, not
+      # issues (an issue with 3 fix versions counts 3 times here) - a
+      # different meaning from the top-level `count` above, so the view
+      # compiler's name-collision rule (same one that forced
+      # interval_status_name below) applies here too.
+      - join_path: issues.fix_version
+        includes:
+          - name: value
+            alias: fix_version_name
+          - name: count
+            alias: fix_version_count

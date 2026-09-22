@@ -1,0 +1,48 @@
+cubes:
+  - name: fix_version
+    sql_table: analytics.fix_version
+
+    # Bridge-table cube for array-valued fields promoted with `--target
+    # bridge_table` (docs/phase3-field-selection-design.md, README.md's "For
+    # developers" section, "Array-valued fields" subsection) — the one
+    # documented-but-unbuilt gap as of 2026-09-22, now closed. One row per
+    # (issue, array element): promoting "Fix Version/s" produced this table,
+    # one row per fix version attached to an issue. Mirrors
+    # issue_status_interval.yml/issue.yml's shape and join-direction
+    # reasoning — joined from issues.yml, not declared here, so the flow
+    # view's join_path direction matches wherever the join edge lives.
+
+    dimensions:
+      - name: bridge_id
+        # No single-column surrogate key exists (the real PK is
+        # instance_id+issue_id+seq) - same pattern as interval_id/issue_ref
+        # in the other two full-path cubes.
+        sql: "{CUBE}.instance_id || ':' || {CUBE}.issue_id || ':' || {CUBE}.seq"
+        type: string
+        primary_key: true
+
+      # Real, named dimensions (not just folded into bridge_id above) so
+      # issues.yml's join can reference them by member name - same reason
+      # issue_status_interval.yml/issue.yml declare issue_id/instance_id.
+      - name: issue_id
+        sql: issue_id
+        type: number
+
+      - name: instance_id
+        sql: instance_id
+        type: string
+
+      - name: seq
+        # Element position within the array on a given issue (0-based) -
+        # not an ordering guarantee from Jira, just the extraction order
+        # transform/runner.py wrote it in.
+        sql: seq
+        type: number
+
+      - name: value
+        sql: value
+        type: string
+
+    measures:
+      - name: count
+        type: count

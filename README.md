@@ -301,8 +301,8 @@ extracted issue (`Fixed`, `Duplicate`, `Won't Fix`, a null bucket for genuinely 
 ...). Adding the next promoted field is exactly Path A's step 4 above: one dimension line in
 `issue.yml`, one `includes` line in `flow.yml`.
 
-Remaining gap: bridge tables (`--target bridge_table`, e.g. `analytics.fix_version`) still have no Cube
-cube of their own — only the wide-table path above is wired up.
+Bridge tables now have a cube too (`cube/model/cubes/fix_version.yml`) — see the "Array-valued fields"
+subsection below.
 
 ### Array-valued fields (Fix Version/s, Labels, Sprint, ...) need `--target bridge_table`
 
@@ -329,10 +329,15 @@ the capital letter; `fix_version` is fine. This does **not** apply to Jira's own
 tool resolves automatically and never asks you to type — Jira's ids are not always lowercase either,
 e.g. "Fix Version/s" itself is `fixVersions` internally, and that's handled correctly.)
 
-This has the same Cube gap as above, one level deeper: after promoting and rebuilding,
-`analytics.fix_version` exists in Postgres with real data, but — same as `analytics.issue` — nothing
-in `cube/model/` reads it yet. It needs its own small cube (`sql_table: analytics.fix_version`, joined
-to `issues` one-to-many, same shape as `issue_status_interval.yml`) before it can show up in Superset.
+`analytics.fix_version` is wired into Cube (`cube/model/cubes/fix_version.yml`, joined to `issues`
+one-to-many, same shape as `issue_status_interval.yml`) and exposed in the `flow` view as
+`fix_version_name`/`fix_version_count` — aliased because this cube's own `count` measure counts
+(issue, fix-version) pairs, not issues (an issue with 3 fix versions counts 3 times), which is a
+different meaning from the view's top-level `count`. Live-verified: `flow.fix_version_count` grouped
+by `flow.fix_version_name` matches `analytics.fix_version`'s real distribution exactly (`3.6.0` → 725,
+`0.9.0.0` → 500, `3.5.0` → 446, ...). If you promote a *different* array field to its own bridge
+table, it needs the same small cube built fresh — `fix_version.yml` is the reference to copy, the
+same way `issue.yml`'s `resolution_name` is the reference for wide-table promoted columns.
 
 ### Two `status_name`-shaped fields, on purpose
 
