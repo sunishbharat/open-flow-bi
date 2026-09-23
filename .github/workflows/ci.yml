@@ -28,7 +28,7 @@ jobs:
       # No network at test time (tests/conftest.py's vcr_config + this
       # project's --record-mode=none default in pyproject.toml): all Jira
       # HTTP is replayed from tests/cassettes/{cloud,dc}/, real or
-      # hand-authored (CLAUDE.md "Write the test with the code").
+      # hand-authored (tests are written with the code).
       - name: pytest
         run: uv run pytest -q
 

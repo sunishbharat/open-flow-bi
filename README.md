@@ -36,9 +36,13 @@ Edit `.env` (see `.env.example` for prefilled defaults you can try immediately):
 | Variable | Required for | Notes |
 |---|---|---|
 | `FLOWBI_JIRA_BASE_URL` | always | e.g. `https://your-domain.atlassian.net` or `https://jira.your-company.com` |
-| `FLOWBI_JIRA_EMAIL` + `FLOWBI_JIRA_API_TOKEN` | Jira Cloud | |
+| `FLOWBI_JIRA_EMAIL` + `FLOWBI_JIRA_API_TOKEN` | Jira Cloud | the Atlassian account's email + an API token — see "Connecting to your own Jira" |
 | `FLOWBI_JIRA_PAT` | Jira Server/DC | personal access token |
+| `FLOWBI_JIRA_DEPLOYMENT` | optional | `cloud` or `server` — skips auto-detection; set it for mTLS-protected instances |
+| `FLOWBI_JIRA_CLIENT_CERT_B64` + `FLOWBI_JIRA_CLIENT_KEY_B64` | mTLS only | client certificate + private key, each a base64-encoded PEM, set together |
+| `REQUESTS_CA_BUNDLE` | corporate TLS proxy only | path to a CA bundle (public CAs + your company's root CA) |
 | `FLOWBI_JIRA_PROJECT` | optional | limit extraction to one project key, e.g. `KAFKA` |
+| `FLOWBI_JIRA_INSTANCE_ID` | optional | stable name for this Jira in the database; defaults to the URL's host |
 | `FLOWBI_POSTGRES_DSN` | Postgres / dashboard | connection string for the local `docker-compose` Postgres |
 | `CUBE_READER_PW` | dashboard | password for Cube's read-only Postgres role |
 | `CUBE_SQL_USER` / `CUBE_SQL_PASSWORD` | dashboard | credentials Superset uses to connect to Cube |
@@ -55,14 +59,119 @@ uv run flowbi extract changelog --limit 5     # -> out/jira_raw/issue_changelog/
 uv run flowbi quality check issues
 ```
 
-To point this at your own Jira, set `FLOWBI_JIRA_BASE_URL` and your credentials in `.env` (see
-Configuration above).
+To point this at your own Jira, see "Connecting to your own Jira" below.
+
+## Connecting to your own Jira
+
+Set `FLOWBI_JIRA_BASE_URL` plus the credentials for your Jira type, then check the connection with
+`uv run flowbi doctor` before extracting anything. `flowbi` detects Cloud vs Server/Data Center on
+its own, and picks the matching API and authentication.
+
+### Jira Cloud (`*.atlassian.net`)
+
+1. Create an API token at https://id.atlassian.com/manage-profile/security/api-tokens, signed in as
+   the account `flowbi` should read Jira as. Use a regular API token; scoped API tokens are routed
+   through `api.atlassian.com` and aren't supported yet.
+2. In `.env`, replace the prefilled Apache values:
+
+   ```bash
+   FLOWBI_JIRA_BASE_URL=https://your-domain.atlassian.net
+   FLOWBI_JIRA_EMAIL=you@your-company.com       # the email of the account that owns the token
+   FLOWBI_JIRA_API_TOKEN=<the token>
+   FLOWBI_JIRA_PAT=                             # clear the Server/DC placeholder
+   FLOWBI_JIRA_PROJECT=ABC                      # optional
+   # FLOWBI_JIRA_DEPLOYMENT=cloud               # optional, skips auto-detection
+   ```
+
+3. Check:
+
+   ```bash
+   uv run flowbi doctor                        # expect: Deployment = Cloud, and an account timezone
+   uv run flowbi extract issues --limit 5
+   ```
+
+Things specific to Cloud:
+
+- **Email and token must belong to the same account.** Cloud uses both together (HTTP Basic auth).
+  A token on its own won't work.
+- **Everything is read with that account's permissions.** Issues in projects it can't browse are
+  never extracted. A dedicated service account with read access to the projects you need is the
+  cleanest setup.
+- **Wrong credentials stop the run.** Cloud can answer a search made with bad credentials with an
+  empty result rather than a 401, so `flowbi` checks the account first (`GET /myself`) and stops
+  with "Jira Cloud rejected the credentials..." rather than loading nothing. `flowbi doctor` shows
+  the same check as "Account timezone".
+- **Cloud rate limits are shared site-wide.** Start with `--limit` and scope large first runs by
+  project (`FLOWBI_JIRA_PROJECT`) rather than pulling the whole site at once.
+
+### Jira Server / Data Center
+
+```bash
+FLOWBI_JIRA_BASE_URL=https://jira.your-company.com
+FLOWBI_JIRA_PAT=<personal access token>     # Jira: Profile → Personal Access Tokens
+FLOWBI_JIRA_EMAIL=                          # not used on Server/DC
+FLOWBI_JIRA_API_TOKEN=
+```
+
+### Jira behind mutual TLS (client certificate)
+
+Some company Jira instances also require a client certificate. Without it, every request fails with
+a connection reset (`RemoteDisconnected` / `Connection aborted`) before Jira returns any response,
+which looks like a firewall problem. Get a certificate (usually a `.pfx`) from your PKI team, then:
+
+```bash
+# convert the .pfx to PEM (run locally; don't commit the output files)
+openssl pkcs12 -in service.pfx -clcerts -nokeys -out client-cert.pem -legacy
+openssl pkcs12 -in service.pfx -nocerts -nodes  -out client-key.pem  -legacy
+
+# base64-encode each onto a single line, for .env
+base64 -w0 client-cert.pem      # -> FLOWBI_JIRA_CLIENT_CERT_B64
+base64 -w0 client-key.pem       # -> FLOWBI_JIRA_CLIENT_KEY_B64
+```
+
+```bash
+FLOWBI_JIRA_DEPLOYMENT=server               # or cloud; skips the unauthenticated detection call
+FLOWBI_JIRA_CLIENT_CERT_B64=<base64 of client-cert.pem>
+FLOWBI_JIRA_CLIENT_KEY_B64=<base64 of client-key.pem>
+```
+
+Every Jira command logs one `jira_connection` line with what's in effect: deployment type,
+whether it was declared or detected, whether mTLS is configured, and which CA bundle is used. It
+never logs any key material. On Cloud Foundry, that line in `cf logs` is the first thing to check.
+
+Delete the local `.pem` files afterwards. `flowbi` writes them to a private temporary directory only
+for the duration of each command. Setting only one of the two variables is an error.
+`flowbi doctor` shows "mTLS client cert: configured" when both are set.
+
+### Behind a TLS-inspecting corporate proxy
+
+If `flowbi doctor` fails with an SSL certificate verification error, your network is re-signing
+HTTPS traffic with a company root certificate. Build a combined bundle of the public CAs plus that
+root, then point `REQUESTS_CA_BUNDLE` at it:
+
+```bash
+cat "$(uv run python -c 'import certifi; print(certifi.where())')" company-root-ca.pem > combined-ca.pem
+export REQUESTS_CA_BUNDLE=$PWD/combined-ca.pem
+```
+
+It must be the combined file: pointing it at the company root alone breaks every other HTTPS host.
+
+### Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| `RemoteDisconnected` / `Connection aborted`, no HTTP status | mTLS required: set the client certificate (above), or a firewall is blocking the host |
+| `SSLError` / `certificate verify failed` | corporate TLS proxy: set `REQUESTS_CA_BUNDLE` (above) |
+| `doctor` shows "Account timezone: unavailable (check credentials)" | wrong token, or (Cloud) email and token from different accounts |
+| "Jira Cloud rejected the credentials" | email and token wrong, expired, or from different accounts |
+| Cloud extraction succeeds but loads 0 issues | the account can't browse that project, or `FLOWBI_JIRA_PROJECT` is wrong |
+| `401` | wrong or expired token/PAT |
 
 ## CLI
 
 ```bash
 uv run flowbi --help
-uv run flowbi doctor                            # detect deployment type, check connectivity
+uv run flowbi doctor                            # deployment type, connectivity, credentials, mTLS
 uv run flowbi extract fields --sink table       # preview available fields
 uv run flowbi extract issues --limit N          # extract issues
 uv run flowbi extract changelog --limit N       # extract full changelog history

@@ -11,7 +11,7 @@ Two independent things, both driven by `flowbi transform`:
    nothing to do with new Jira data, so it only touches promoted columns,
    never intervals.
 
-SQLAlchemy Core throughout (CLAUDE.md library-decision-register), no ORM.
+SQLAlchemy Core throughout (library decision register), no ORM.
 """
 
 from __future__ import annotations

@@ -49,7 +49,7 @@ BLOCKING: dict[str, str] = {
 # name -> SQL. Reported alongside BLOCKING, never fails the gate.
 #
 # Corrected against the real schema, not the design doc's §9 example as
-# written (CLAUDE.md: "trust the response and update this file"):
+# written (trust the response over the doc):
 # `changelog_complete` is stamped by flatten.changelog() onto
 # jira_raw.issue_changelog rows, never onto jira_raw.issues — confirmed by
 # flatten.py's own comment ("an issue with complete=False and no histories

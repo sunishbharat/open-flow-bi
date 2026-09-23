@@ -29,13 +29,13 @@ ISSUES_SCHEMA = pa.DataFrameSchema(
         # flatten.issues() yields these as passthrough ISO strings, but dlt's
         # own normalizer detects the ISO shape at load time and casts them to
         # a real timestamp column in Parquet - confirmed against a live
-        # extract, not assumed (CLAUDE.md: "trust the response and update
-        # this file"). Checking pyarrow.string() here silently failed against
+        # extract, not assumed (trust the response, update
+        # the docs). Checking pyarrow.string() here silently failed against
         # every real extract.
         "created_at": pa.Column(pyarrow.timestamp("us", tz="UTC"), nullable=False),
         "updated_at": pa.Column(pyarrow.timestamp("us", tz="UTC"), nullable=True),
     },
-    # rule 4 (CLAUDE.md): issue_id is the only identity, scoped per instance
+    # issue_id is the only identity, scoped per instance
     # (P2-D2 — primary keys must include instance_id).
     unique=["instance_id", "issue_id"],
     strict=False,  # `fields` (passthrough JSON) and dlt's own _dlt_* columns ride along

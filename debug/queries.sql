@@ -1,5 +1,5 @@
 -- Standing debug queries for `duckdb -c` / `duckdb -ui` against out/jira_raw/**/*.parquet.
--- See CLAUDE.md "Inspecting output" — add to this file rather than writing one-off scripts.
+-- Add to this file rather than writing one-off scripts.
 
 -- Changelog source-tier coverage: how many rows came from each of the 3 tiers.
 SELECT source, count(*) AS rows, count(DISTINCT issue_id) AS issues
@@ -9,7 +9,7 @@ ORDER BY rows DESC;
 
 -- Duplicate item_index within a single (issue_id, history_id) — should be zero rows.
 -- A non-empty result means flatten.changelog's deterministic sort broke, or a
--- re-ingest duplicated a reordered items[] (CLAUDE.md "Jira API facts").
+-- re-ingest duplicated a reordered items[] (Jira does not guarantee items[] order).
 SELECT issue_id, history_id, item_index, count(*) AS n
 FROM 'out/jira_raw/issue_changelog/*.parquet'
 GROUP BY issue_id, history_id, item_index
@@ -41,7 +41,7 @@ ORDER BY transitions DESC;
 
 -- Run-to-run diff: row counts per _dlt_load_id (each pipeline.run() call gets
 -- its own load id — dlt's filesystem layout has no run=<load_id> directory,
--- see CLAUDE.md "Inspecting output", so diff on this column instead).
+-- so diff on this column instead).
 SELECT _dlt_load_id, count(*) AS rows
 FROM 'out/jira_raw/issues/*.parquet'
 GROUP BY _dlt_load_id
@@ -50,7 +50,7 @@ ORDER BY _dlt_load_id DESC;
 -- Field discovery: every top-level `fields` key present on one issue, one per
 -- row (fields is a passthrough JSON column — see M4 notes in
 -- pipeline/source.py on why it isn't exploded into child tables). Custom
--- field ids (customfield_NNNNN) are per-instance — CLAUDE.md rule "map by
+-- field ids (customfield_NNNNN) are per-instance — the rule is "map by
 -- (name, schema type), never hard-code an id" — so treat these as
 -- discovery-only, not stable identifiers to hard-code elsewhere.
 SELECT unnest(json_keys(fields)) AS field_key
@@ -66,7 +66,7 @@ LIMIT 5;
 
 -- Common fields pulled out of the `fields` JSON passthrough column.
 -- `fields` has no top-level `status`/`assignee`/etc. columns by design
--- (custom field ids and shapes differ per Jira instance — rule 4/CLAUDE.md's
+-- (custom field ids and shapes differ per Jira instance — by design,
 -- "fields stays a passthrough dict[str, Any]"), so pull nested values out
 -- with json_extract_string(fields, '$.<path>') instead of selecting them
 -- directly. Swap the path for any other field the same way, e.g.

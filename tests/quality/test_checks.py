@@ -48,7 +48,7 @@ def test_validate_issues_accepts_a_well_formed_table():
 
 
 def test_validate_issues_rejects_duplicate_issue_id():
-    # rule 4 (CLAUDE.md): issue_id is the only identity — never duplicated
+    # issue_id is the only identity — never duplicated
     # (within the same instance_id — P2-D2).
     table = _issues_table(issue_id=pa.array([1, 1], type=pa.int64()))
     with pytest.raises(SchemaError):

@@ -1,4 +1,4 @@
-"""Enforces CLAUDE.md rule 1: src/openflowbi/jira/ imports no destination, no
+"""Enforces the jira/ boundary rule: src/openflowbi/jira/ imports no destination, no
 database, no filesystem. It speaks HTTP and returns plain objects.
 
 Scans every .py file under jira/ at test time, so this stays enforced as
@@ -9,7 +9,11 @@ needing manual updates here.
 import ast
 from pathlib import Path
 
-JIRA_DIR = Path(__file__).parent.parent.parent / "src" / "openflowbi" / "jira"
+SRC = Path(__file__).parent.parent.parent / "src" / "openflowbi"
+JIRA_DIR = SRC / "jira"
+# jira/ builds every client through cloud/http.py, so that module is held to the same rule.
+# cloud/tls.py writes the mTLS key files and is only ever imported by the CLI.
+JIRA_DEPENDENCIES = (SRC / "cloud" / "http.py",)
 
 FORBIDDEN_MODULE_PREFIXES = (
     "dlt.pipeline",
@@ -20,6 +24,9 @@ FORBIDDEN_MODULE_PREFIXES = (
     "sqlite3",
     "psycopg2",
     "psycopg",
+    "tempfile",
+    "shutil",
+    "openflowbi.cloud.tls",
 )
 
 
@@ -45,7 +52,7 @@ def _open_call_lines(tree: ast.AST) -> list[int]:
 
 def test_jira_package_has_no_destination_db_or_filesystem_imports():
     violations = []
-    for path in sorted(JIRA_DIR.glob("*.py")):
+    for path in [*sorted(JIRA_DIR.glob("*.py")), *JIRA_DEPENDENCIES]:
         tree = ast.parse(path.read_text(), filename=str(path))
         for module in _imported_modules(tree):
             if any(module == p or module.startswith(p + ".") for p in FORBIDDEN_MODULE_PREFIXES):

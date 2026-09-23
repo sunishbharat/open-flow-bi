@@ -78,7 +78,7 @@ def test_fetch_orchestration_dc_skips_bulk_and_uses_per_issue():
         batches = list(changelog.fetch(APACHE_JIRA, None, is_cloud=False, issues=issues))
 
     mock_bulk.assert_not_called()
-    mock_per_issue.assert_called_once_with(APACHE_JIRA, None, "1")
+    mock_per_issue.assert_called_once_with(APACHE_JIRA, None, "1", client_cert=None)
     assert batches == [("1", "per_issue", True, [{"id": "h9"}])]
 
 
@@ -95,8 +95,8 @@ def test_fetch_orchestration_cloud_tries_bulk_before_per_issue():
     ):
         batches = list(changelog.fetch(APACHE_JIRA, None, is_cloud=True, issues=issues))
 
-    mock_bulk.assert_called_once_with(APACHE_JIRA, None, ["1", "2"])
-    mock_per_issue.assert_called_once_with(APACHE_JIRA, None, "2")
+    mock_bulk.assert_called_once_with(APACHE_JIRA, None, ["1", "2"], client_cert=None)
+    mock_per_issue.assert_called_once_with(APACHE_JIRA, None, "2", client_cert=None)
     assert ("1", "bulkfetch", True, [{"id": "hbulk"}]) in batches
     assert ("2", "per_issue", True, [{"id": "hfallback"}]) in batches
 

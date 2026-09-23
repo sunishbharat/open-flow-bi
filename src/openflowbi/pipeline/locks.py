@@ -8,7 +8,7 @@ already prevents the collision on its own; this lock is a second,
 independent guard against the same failure mode, serializing only the load
 step — extraction (the quota-bound, expensive part) stays fully parallel.
 
-SQLAlchemy Core, not the ORM (CLAUDE.md library-decision-register) — arrives
+SQLAlchemy Core, not the ORM (library decision register) — arrives
 free with Alembic, no new dependency.
 """
 

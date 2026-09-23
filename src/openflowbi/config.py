@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     jira_email: str | None = None
     jira_api_token: str | None = None
     jira_pat: str | None = None
+    # "cloud" | "server": declare the deployment instead of probing /serverInfo
+    # unauthenticated first — needed behind mTLS, where that probe is reset.
+    jira_deployment: str | None = None
+    # mTLS client certificate + private key, each a base64-encoded PEM (how a key pair
+    # survives `cf set-env`). Both or neither; see openflowbi.cloud.tls.
+    jira_client_cert_b64: str | None = None
+    jira_client_key_b64: str | None = None
     jira_project: str | None = None
     # Phase 2 (docs/phase2-postgres-design.md §7): stable slug, part of every
     # Postgres primary key. Optional — deployment.derive_instance_id() falls
@@ -29,6 +36,15 @@ class Settings(BaseSettings):
     # surface for the Postgres DSN, handed to dlt explicitly rather than
     # letting dlt's own secrets.toml resolution be a second source of truth.
     postgres_dsn: str | None = None
+
+    @field_validator(
+        "jira_deployment", "jira_client_cert_b64", "jira_client_key_b64", mode="before"
+    )
+    @classmethod
+    def _blank_means_unset(cls, value: str | None) -> str | None:
+        # Same present-but-empty trap as jira_incremental_start below: `FLOWBI_X=` in .env
+        # arrives as "" and must mean "not configured", not an invalid value.
+        return value or None
 
     @field_validator("jira_incremental_start", mode="before")
     @classmethod

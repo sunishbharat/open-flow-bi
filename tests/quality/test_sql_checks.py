@@ -93,7 +93,7 @@ def test_issues_pk_unique_passes_on_clean_data(postgres_dsn: str, clean_tables: 
 
 
 def test_issues_pk_unique_fails_on_seeded_duplicate(postgres_dsn: str, clean_tables: None) -> None:
-    # rule 4 (CLAUDE.md): issue_id is the only identity — never duplicated
+    # issue_id is the only identity — never duplicated
     # within an instance. Postgres is where `merge` actually enforces this
     # (§1) — this seeds the exact failure a filesystem destination silently
     # allows to accumulate.

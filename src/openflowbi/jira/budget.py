@@ -25,7 +25,7 @@ def parse_headers(headers: dict[str, str]) -> RateLimitStatus:
     WRITE: pyrate-limiter (and every other Python rate limiter) enforces a
     client-chosen rate; none of them consume a server-reported budget. Jira
     Cloud reports its own remaining budget instead — this is the feedback loop
-    that no library provides (CLAUDE.md "Jira API facts" / rate limiting).
+    that no library provides (Jira Cloud rate limiting is a budget).
     """
     remaining_raw = headers.get("X-RateLimit-Remaining")
     retry_after_raw = headers.get("Retry-After")

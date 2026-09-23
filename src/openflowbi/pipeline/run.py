@@ -46,7 +46,7 @@ def run(
 
     if destination == "postgres":
         # M7.1 (docs/phase2-postgres-design.md §4.2): the destination is one
-        # dlt string swap, per CLAUDE.md's library-first rule — no
+        # dlt string swap, per the library-first rule — no
         # hand-written writer.
         if not postgres_dsn:
             raise ValueError("FLOWBI_POSTGRES_DSN is required for --destination postgres")
@@ -66,7 +66,7 @@ def run(
     else:
         # Default layout ({table_name}/{load_id}.{file_id}.{ext}): dlt only
         # allows {schema_name} before {table_name} in a layout, so a
-        # run=<load_id> prefix directory (as CLAUDE.md's original example
+        # run=<load_id> prefix directory (as an earlier doc example
         # assumed) isn't possible — every row still carries _dlt_load_id for
         # run-to-run diffing.
         dest = dlt.destinations.filesystem(bucket_url=(out_dir or OUT_DIR).resolve().as_uri())
@@ -82,7 +82,7 @@ def run(
         profile, project=project, incremental_start=incremental_start
     ).with_resources(*resources)
     if limit is not None:
-        # Rule 6 (CLAUDE.md): a debug run must never walk a whole project by
+        # Project rule: a debug run must never walk a whole project by
         # accident, even when writing to a real destination, not just --sink table.
         for name in resources:
             source.resources[name].add_limit(limit)

@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 
-from dlt.sources.helpers.rest_client import RESTClient
 from dlt.sources.helpers.rest_client.auth import AuthConfigBase
+
+from openflowbi.cloud.http import ClientCert, make_client
 
 
 @dataclass(frozen=True)
@@ -16,7 +17,7 @@ class FieldMap:
     """Maps Jira fields by (name, schema type) — never by id.
 
     customfield_10001 is not the same field on two Jira instances
-    (CLAUDE.md "Jira API facts"); callers must look fields up by name.
+    — callers must look fields up by name.
     """
 
     def __init__(self, fields: list[Field]) -> None:
@@ -30,14 +31,15 @@ class FieldMap:
             raise KeyError(f"No field named {name!r} with schema type {schema_type!r}") from exc
 
 
-def fetch(base_url: str, auth: AuthConfigBase | None = None) -> list[Field]:
+def fetch(
+    base_url: str, auth: AuthConfigBase | None = None, *, client_cert: ClientCert | None = None
+) -> list[Field]:
     """GET /field and parse the (name, schema type) -> id map.
 
     WRITE: field ids are per-instance; nothing generic maps them
-    (CLAUDE.md non-negotiable rule / "Jira API facts").
+    (customfield ids differ per instance).
     """
-    base_url = base_url.rstrip("/")
-    client = RESTClient(base_url=base_url, auth=auth)
+    client = make_client(base_url, auth, client_cert=client_cert)
     raw = client.get("/rest/api/2/field").json()
     return [
         Field(

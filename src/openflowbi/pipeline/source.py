@@ -4,9 +4,9 @@ from typing import Any
 import dlt
 import requests
 import structlog
-from dlt.sources.helpers.rest_client import RESTClient
 from dlt.sources.helpers.rest_client.paginators import JSONResponseCursorPaginator, OffsetPaginator
 
+from openflowbi.cloud.http import make_client
 from openflowbi.jira import changelog as changelog_mod
 from openflowbi.jira import deployment as deployment_mod
 from openflowbi.jira import fields as fields_mod
@@ -48,21 +48,28 @@ def _search_pages(
     this independently rather than sharing one HTTP generator between two dlt
     resources — a second search call is simpler and keeps both resources
     lazily limit-able on their own, at the cost of fetching issue pages twice
-    when both resources run in the same pipeline (CLAUDE.md prefers boring
-    and readable over clever).
+    when both resources run in the same pipeline (boring and readable
+    over clever).
     """
     if profile.is_cloud:
         # POST /search/jql ignores startAt and returns no total — pagination
         # is strictly sequential via an opaque nextPageToken in the JSON body
-        # (CLAUDE.md "Jira API facts").
-        client = RESTClient(
-            base_url=profile.base_url,
-            auth=profile.auth,
-            paginator=JSONResponseCursorPaginator(cursor_body_path="nextPageToken"),
+        # (Jira Cloud's /search/jql contract). cursor_path is where the token is READ
+        # from the response (dlt's default, "cursors.next", never matches Jira,
+        # which silently stopped every Cloud walk after page 1);
+        # cursor_body_path is where it is WRITTEN into the next request.
+        client = make_client(
+            profile.base_url,
+            profile.auth,
+            client_cert=profile.client_cert,
+            paginator=JSONResponseCursorPaginator(
+                cursor_path="nextPageToken", cursor_body_path="nextPageToken"
+            ),
         )
         body: dict[str, Any] = {"jql": jql, "maxResults": PAGE_SIZE, "fields": ["*all"]}
         if expand:
-            body["expand"] = [expand]
+            # A comma-separated string, not a JSON list — Cloud rejects the list form.
+            body["expand"] = expand
         pages = client.paginate(
             "/rest/api/3/search/jql",
             method="POST",
@@ -71,9 +78,10 @@ def _search_pages(
         )
     else:
         # GET /search uses startAt offsets and does return total.
-        client = RESTClient(
-            base_url=profile.base_url,
-            auth=profile.auth,
+        client = make_client(
+            profile.base_url,
+            profile.auth,
+            client_cert=profile.client_cert,
             paginator=OffsetPaginator(
                 limit=PAGE_SIZE,
                 offset_param="startAt",
@@ -90,6 +98,10 @@ def _search_pages(
         yield from page
 
 
+class JiraCredentialsError(RuntimeError):
+    """Jira Cloud rejected the configured credentials."""
+
+
 def _updated_floor(profile: DeploymentProfile, cursor_start: str) -> str:
     """Resolve an incremental cursor's JQL floor, in the account's timezone.
 
@@ -99,9 +111,21 @@ def _updated_floor(profile: DeploymentProfile, cursor_start: str) -> str:
     live in one place.
     """
     try:
-        timezone = deployment_mod.account_timezone(profile.base_url, profile.auth)
-    except requests.exceptions.RequestException:
-        # CLAUDE.md says to assert the account timezone at startup; doctor
+        timezone = deployment_mod.account_timezone(
+            profile.base_url, profile.auth, client_cert=profile.client_cert
+        )
+    except requests.exceptions.RequestException as exc:
+        if profile.is_cloud:
+            # Not a fallback on Cloud: Cloud may answer a search made with bad
+            # credentials with an empty result instead of a 401, so carrying on
+            # would turn wrong credentials into a "successful", empty extraction.
+            # Cloud has no anonymous access for the UTC fallback to serve anyway.
+            raise JiraCredentialsError(
+                f"Jira Cloud rejected the credentials for {profile.base_url} (GET /myself "
+                "failed). Check FLOWBI_JIRA_EMAIL and FLOWBI_JIRA_API_TOKEN belong to the "
+                "same account, and run `flowbi doctor`."
+            ) from exc
+        # The account timezone should be asserted at startup; doctor
         # (M1) does that and fails loudly. Here, an unresolvable /myself
         # (anonymous access or an invalid token - the live Apache Jira
         # test target in this repo's docs uses a dummy PAT with no real
@@ -130,11 +154,13 @@ def jira_source(
         write_disposition="merge",
     )
     def fields() -> Iterator[dict[str, Any]]:
-        raw_fields = fields_mod.fetch(profile.base_url, profile.auth)
+        raw_fields = fields_mod.fetch(
+            profile.base_url, profile.auth, client_cert=profile.client_cert
+        )
         yield from flatten.fields(raw_fields, profile.instance_id)
 
     # max_table_nesting=0: `fields` stays a single passthrough JSON column
-    # instead of exploding into per-instance child tables (CLAUDE.md: strict
+    # instead of exploding into per-instance child tables (strict
     # models/relational explosion over custom fields break on the next Jira
     # instance they meet).
     @dlt.resource(
@@ -209,7 +235,11 @@ def jira_source(
                 yield issue
 
         batches = changelog_mod.fetch(
-            profile.base_url, profile.auth, profile.is_cloud, _tap(raw_issues)
+            profile.base_url,
+            profile.auth,
+            profile.is_cloud,
+            _tap(raw_issues),
+            client_cert=profile.client_cert,
         )
         yield from flatten.changelog(batches, profile.instance_id, issue_updated)
 

@@ -3,7 +3,7 @@
 -- Not an Alembic migration: role creation needs superuser and is a one-time
 -- operator action, run by hand once per environment (local docker-compose,
 -- or the target Postgres instance in whatever deployment eventually hosts
--- it — Cloud Foundry manifests are out of scope for now, per CLAUDE.md).
+-- it — Cloud Foundry manifests are out of scope for now).
 --
 -- Run as a superuser (e.g. the docker-compose `flowbi` bootstrap user):
 --   psql "$FLOWBI_POSTGRES_DSN" -v writer_pw=plaintext_pw -v reader_pw=plaintext_pw -f migrations/sql/roles.sql
@@ -23,7 +23,7 @@
 -- script was previously assumed to run *before* any extraction, but
 -- `GRANT ... ON SCHEMA jira_raw` / `ALTER SCHEMA jira_raw OWNER TO ...` both
 -- fail with "schema does not exist" if no extraction has created jira_raw
--- yet (dlt owns creating it — CLAUDE.md rule 2 — this script never should,
+-- yet (dlt owns creating it — this script never should,
 -- and still doesn't: `CREATE SCHEMA IF NOT EXISTS` below is a no-op on a
 -- database where jira_raw already exists from a prior `flowbi extract`
 -- run, and only bootstraps the empty schema + ownership on a fresh one).

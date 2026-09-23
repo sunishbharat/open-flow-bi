@@ -1,10 +1,11 @@
 import getpass
 import itertools
+import os
 import sys
 from datetime import UTC, datetime
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -15,6 +16,7 @@ from pandera.errors import SchemaError
 from rich.console import Console
 from rich.table import Table
 
+from openflowbi.cloud import tls
 from openflowbi.config import Settings
 from openflowbi.fields import discovery, selection
 from openflowbi.fields import service as fields_service
@@ -24,6 +26,7 @@ from openflowbi.jira.deployment import DeploymentProfile
 from openflowbi.logging import configure_logging
 from openflowbi.ops import sync_run as sync_run_mod
 from openflowbi.pipeline import run as pipeline_run
+from openflowbi.pipeline.source import JiraCredentialsError
 from openflowbi.quality import checks, sql_checks
 from openflowbi.transform import runner as transform_runner
 
@@ -57,7 +60,7 @@ TABLE_VALIDATORS = {
 
 configure_logging()
 
-# Rule 6 (CLAUDE.md): every command that walks Jira data honours --limit — a
+# Project rule: every command that walks Jira data honours --limit — a
 # debug run must never walk a whole project by accident. Defined once, reused
 # by every extract subcommand so it can't be forgotten on a new one.
 LimitOption = Annotated[
@@ -73,13 +76,33 @@ DestinationOption = Annotated[
 
 def _resolve_profile() -> DeploymentProfile:
     settings = Settings()  # type: ignore[call-arg]  # required fields resolved from env at runtime
-    return deployment.detect(
+    try:
+        client_cert = tls.client_cert_files(
+            settings.jira_client_cert_b64, settings.jira_client_key_b64
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    profile = deployment.detect(
         settings.jira_base_url,
         email=settings.jira_email,
         api_token=settings.jira_api_token,
         pat=settings.jira_pat,
         instance_id=settings.jira_instance_id,
+        deployment=settings.jira_deployment,
+        client_cert=client_cert,
     )
+    # One line per command with the TLS/connection state, so a CF task's `cf logs` shows
+    # what was actually in effect. No secrets: only whether mTLS is on, and the CA bundle's
+    # path. (Key names deliberately avoid "cert", which the log redaction would blank.)
+    logger.info(
+        "jira_connection",
+        base_url=profile.base_url,
+        deployment="cloud" if profile.is_cloud else "server",
+        detection="declared" if settings.jira_deployment else "probed",
+        mtls="configured" if profile.client_cert else "not configured",
+        ca_bundle=os.environ.get("REQUESTS_CA_BUNDLE") or "system default",
+    )
+    return profile
 
 
 @app.command()
@@ -99,9 +122,12 @@ def doctor() -> None:
     table.add_row("Deployment", "Cloud" if profile.is_cloud else "Server/DC")
     table.add_row("Version", profile.version)
     table.add_row("Base URL", profile.base_url)
+    table.add_row("mTLS client cert", "configured" if profile.client_cert else "not configured")
 
     try:
-        tz = deployment.account_timezone(profile.base_url, profile.auth)
+        tz = deployment.account_timezone(
+            profile.base_url, profile.auth, client_cert=profile.client_cert
+        )
         table.add_row("Account timezone", tz)
     except requests.exceptions.RequestException:
         table.add_row("Account timezone", "unavailable (check credentials)")
@@ -131,7 +157,7 @@ def extract_fields(sink: SinkOption = "table", limit: LimitOption = 20) -> None:
     # a single already-fetched HTTP response - unnecessary weight for a
     # terminal preview, and one that pipeline_run.run() (used by the other
     # extract commands) properly tears down but bare iteration does not.
-    raw_fields = fields_mod.fetch(profile.base_url, profile.auth)
+    raw_fields = fields_mod.fetch(profile.base_url, profile.auth, client_cert=profile.client_cert)
     rows = list(itertools.islice(flatten.fields(raw_fields, profile.instance_id), limit))
 
     table = Table(title="Jira fields")
@@ -142,6 +168,24 @@ def extract_fields(sink: SinkOption = "table", limit: LimitOption = 20) -> None:
     for row in rows:
         table.add_row(row["field_id"], row["name"], str(row["schema_type"]), str(row["custom"]))
     console.print(table)
+
+
+def _run_pipeline(profile: DeploymentProfile, **kwargs: Any) -> Any:
+    """pipeline_run.run(), with a Jira credentials failure shown as one clear line.
+
+    dlt wraps anything a resource raises (PipelineStepFailed -> ResourceExtractionError), so
+    the actionable message would otherwise sit at the bottom of a long traceback.
+    """
+    try:
+        return pipeline_run.run(profile, **kwargs)
+    except Exception as exc:
+        cause: BaseException | None = exc
+        while cause is not None and not isinstance(cause, JiraCredentialsError):
+            cause = cause.__cause__ or cause.__context__
+        if cause is None:
+            raise
+        console.print(f"[red]Error:[/red] {cause}")
+        raise typer.Exit(1) from exc
 
 
 @extract_app.command("issues")
@@ -155,7 +199,7 @@ def extract_issues(limit: LimitOption = 20, destination: DestinationOption = "fi
     """
     settings = Settings()  # type: ignore[call-arg]  # required fields resolved from env at runtime
     profile = _resolve_profile()
-    info = pipeline_run.run(
+    info = _run_pipeline(
         profile,
         project=settings.jira_project,
         limit=limit,
@@ -173,7 +217,7 @@ def extract_changelog(
     """Extract issue changelogs (3-tier: expand -> bulkfetch -> per-issue)."""
     settings = Settings()  # type: ignore[call-arg]  # required fields resolved from env at runtime
     profile = _resolve_profile()
-    info = pipeline_run.run(
+    info = _run_pipeline(
         profile,
         project=settings.jira_project,
         limit=limit,
@@ -312,6 +356,7 @@ def fields_discover(
         profile.auth,
         project=project or settings.jira_project,
         sample_size=sample,
+        client_cert=profile.client_cert,
     )
     console.print(
         f"[green]OK[/green] {result.fields_seen} fields seen "

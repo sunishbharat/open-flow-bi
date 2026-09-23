@@ -5,7 +5,7 @@
 -- any existing rows for the same scope first, in the same transaction.
 --
 -- seq=0 is always seeded from jira_raw.issues.created_at: the changelog only
--- records transitions, never the initial state (CLAUDE.md's Jira API facts).
+-- records transitions, never the initial state.
 -- from_id/from_value on the first status-change row (if any) become seq=0's
 -- status; with no status changes at all, the issue has never left its
 -- current status, so that becomes seq=0 with an open-ended exited_at.

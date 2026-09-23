@@ -32,7 +32,7 @@ def fields(raw_fields: Iterable[Field], instance_id: str) -> Iterator[dict[str, 
 def issues(raw_issues: Iterable[dict[str, Any]], instance_id: str) -> Iterator[dict[str, Any]]:
     """Flatten raw Jira issue objects into flat rows.
 
-    Pure: no I/O, no clock, no global state (CLAUDE.md rule 3). issue_id is
+    Pure: no I/O, no clock, no global state. issue_id is
     the only identity carried forward — issue_key is a mutable attribute Jira
     changes when an issue moves project, never used as a key (rule 4).
     created_at/updated_at are promoted out of `fields` because downstream

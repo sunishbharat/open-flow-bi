@@ -101,7 +101,7 @@ def test_jql_updated_floor_truncates_to_minute_in_account_timezone():
 def test_jql_updated_floor_converts_across_offsets():
     # A cursor value recorded in UTC must land on the correct local wall-clock
     # time for an account in a different timezone - JQL literals are
-    # evaluated in the calling account's timezone (CLAUDE.md "Jira API facts"),
+    # evaluated in the calling account's timezone,
     # not the offset the cursor value happened to carry.
     floor = deployment.jql_updated_floor("2024-01-15T09:30:00.000+0000", "America/New_York")
     assert floor == "2024-01-15 04:30"
@@ -113,3 +113,85 @@ def test_jql_updated_floor_rejects_a_non_datetime_value():
     # guard against ever building a JQL clause from that.
     with pytest.raises(ValueError, match="full ISO datetime"):
         deployment.jql_updated_floor("P1D", "UTC")
+
+
+def _adapter_stub(seen: list):
+    """Stub requests.adapters.HTTPAdapter.send: record (url, cert), answer as Server/DC."""
+    import json as _json
+
+    def send(self, request, **kwargs):
+        seen.append((request.url, kwargs.get("cert")))
+        response = requests.Response()
+        response.status_code = 200
+        response.headers["Content-Type"] = "application/json"
+        response._content = _json.dumps({"deploymentType": "Server", "version": "9.12.0"}).encode()
+        response.url = request.url
+        response.request = request
+        return response
+
+    return send
+
+
+@pytest.mark.parametrize(("declared", "is_cloud"), [("server", False), ("cloud", True)])
+def test_detect_with_declared_deployment_makes_no_http_call(declared, is_cloud):
+    # Behind mTLS, an unauthenticated /serverInfo probe is reset before credentials are
+    # even considered - declaring the deployment must avoid the call entirely.
+    from unittest.mock import patch
+
+    seen: list = []
+    with patch.object(requests.adapters.HTTPAdapter, "send", _adapter_stub(seen)):
+        profile = deployment.detect(
+            "https://jira.corp.example",
+            email="svc@example.com",
+            api_token="t",
+            pat="p",
+            deployment=declared,
+        )
+    assert seen == []
+    assert profile.is_cloud is is_cloud
+    assert profile.version.startswith("not probed")
+
+
+def test_detect_rejects_unknown_declared_deployment():
+    with pytest.raises(ValueError, match="deployment must be one of"):
+        deployment.detect("https://jira.corp.example", pat="p", deployment="datacenter")
+
+
+def test_detect_probe_presents_client_cert_and_profile_carries_it():
+    from unittest.mock import patch
+
+    cert = ("/c/client-cert.pem", "/c/client-key.pem")
+    seen: list = []
+    with patch.object(requests.adapters.HTTPAdapter, "send", _adapter_stub(seen)):
+        profile = deployment.detect("https://jira.corp.example", pat="p", client_cert=cert)
+    assert [(url, tuple(c)) for url, c in seen] == [
+        ("https://jira.corp.example/rest/api/2/serverInfo", cert)
+    ]
+    assert profile.client_cert == cert
+    assert profile.is_cloud is False
+
+
+def test_account_timezone_presents_client_cert():
+    from unittest.mock import patch
+
+    from dlt.sources.helpers.rest_client.auth import BearerTokenAuth
+
+    cert = ("/c/client-cert.pem", "/c/client-key.pem")
+    seen: list = []
+
+    def send(self, request, **kwargs):
+        seen.append(kwargs.get("cert"))
+        response = requests.Response()
+        response.status_code = 200
+        response.headers["Content-Type"] = "application/json"
+        response._content = b'{"timeZone": "Europe/Berlin"}'
+        response.url = request.url
+        response.request = request
+        return response
+
+    with patch.object(requests.adapters.HTTPAdapter, "send", send):
+        tz = deployment.account_timezone(
+            "https://jira.corp.example", BearerTokenAuth("p"), client_cert=cert
+        )
+    assert tz == "Europe/Berlin"
+    assert [tuple(c) for c in seen] == [cert]

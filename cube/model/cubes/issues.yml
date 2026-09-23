@@ -51,7 +51,7 @@ cubes:
         type: string
 
       - name: project_key
-        # jira_raw.fields is jsonb passthrough (CLAUDE.md rule 3) — extracted
+        # jira_raw.fields is jsonb passthrough (raw JSON by design) — extracted
         # here, not promoted to a column, per phase3-field-selection-design.md
         # §1A: a dimension can read JSON directly without a promotion engine.
         sql: "{CUBE}.fields->'project'->>'key'"

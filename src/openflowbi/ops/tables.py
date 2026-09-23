@@ -1,8 +1,7 @@
 """SQLAlchemy Core table definitions for flowbi_ops.
 
 Alembic owns this schema exclusively — dlt owns jira_raw and must never be
-touched from here (docs/phase2-postgres-design.md P2-D1/§5, CLAUDE.md
-non-negotiable rules). Core, not ORM (CLAUDE.md library-decision-register:
+touched from here (docs/phase2-postgres-design.md P2-D1/§5). Core, not ORM (library decision:
 "SQL toolkit for locks / whole-table checks -> SQLAlchemy Core").
 
 This module is also migrations/env.py's target_metadata: the shapes defined
@@ -132,7 +131,7 @@ field_selection = sa.Table(
     sa.Column("selection_id", sa.BigInteger(), primary_key=True, autoincrement=True),
     sa.Column("version", sa.Integer(), nullable=False),
     sa.Column("instance_id", sa.Text(), nullable=False),
-    sa.Column("field_name", sa.Text(), nullable=False),  # keyed by NAME, not id (CLAUDE.md)
+    sa.Column("field_name", sa.Text(), nullable=False),  # keyed by NAME: ids are per-instance
     sa.Column("schema_type", sa.Text(), nullable=False),
     sa.Column("field_id", sa.Text()),  # explicit override when the name is ambiguous
     sa.Column("promote", sa.Boolean(), nullable=False),
@@ -153,7 +152,7 @@ field_selection = sa.Table(
 # One correction to the design doc: it omits instance_id, but `version` is
 # scoped per instance (field_selection above, §14 open question #5's
 # resolution) — a version number alone doesn't say which instance's selection
-# it refers to, so instance_id is added here (CLAUDE.md: trust reality, fix
+# it refers to, so instance_id is added here (trust reality, fix
 # the doc in the same change).
 rebuild_request = sa.Table(
     "rebuild_request",

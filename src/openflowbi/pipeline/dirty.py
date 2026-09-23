@@ -11,7 +11,7 @@ with those load ids (`_dlt_load_id`) — which, under merge write disposition,
 is exactly the set of rows this run actually loaded (existing untouched rows
 keep their older `_dlt_load_id` and are correctly excluded).
 
-SQLAlchemy Core, not the ORM (CLAUDE.md library-decision-register) — arrives
+SQLAlchemy Core, not the ORM (library decision register) — arrives
 free with Alembic, no new dependency.
 """
 

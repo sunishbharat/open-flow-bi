@@ -10,7 +10,7 @@ caller writes a queued row and returns immediately; `flowbi transform` drains
 it.
 
 One correction to the design doc, made here rather than left as silent drift
-(CLAUDE.md: trust reality, fix the doc in the same change): the doc's §2.2
+(trust reality, fix the doc in the same change): the doc's §2.2
 DDL omits instance_id, but `version` is scoped per instance (§2.1's
 resolution of open question #5, src/openflowbi/fields/selection.py) — a
 version number alone doesn't say which instance's selection it names.

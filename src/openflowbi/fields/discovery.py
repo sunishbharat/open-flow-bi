@@ -21,6 +21,7 @@ import sqlalchemy as sa
 from dlt.sources.helpers.rest_client.auth import AuthConfigBase
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from openflowbi.cloud.http import ClientCert
 from openflowbi.jira import fields as jira_fields
 from openflowbi.ops.tables import field_definition, field_stats
 
@@ -41,7 +42,12 @@ class DiscoverResult:
 
 
 def refresh_field_definitions(
-    dsn: str, instance_id: str, base_url: str, auth: AuthConfigBase
+    dsn: str,
+    instance_id: str,
+    base_url: str,
+    auth: AuthConfigBase,
+    *,
+    client_cert: ClientCert | None = None,
 ) -> tuple[int, int]:
     """GET /field, upsert into flowbi_ops.field_definition.
 
@@ -49,7 +55,7 @@ def refresh_field_definitions(
     stamped `disappeared_at` (once — re-running doesn't bump the timestamp);
     a field that reappears has it cleared. Returns (fields_seen, fields_disappeared).
     """
-    fetched = jira_fields.fetch(base_url, auth)
+    fetched = jira_fields.fetch(base_url, auth, client_cert=client_cert)
     seen_ids = {f.id for f in fetched}
 
     engine = sa.create_engine(dsn)
@@ -195,9 +201,12 @@ def discover(
     auth: AuthConfigBase,
     project: str | None = None,
     sample_size: int = DEFAULT_SAMPLE_SIZE,
+    client_cert: ClientCert | None = None,
 ) -> DiscoverResult:
     """Refresh field_definition, then recompute field_stats. The `flowbi fields discover` body."""
-    fields_seen, fields_disappeared = refresh_field_definitions(dsn, instance_id, base_url, auth)
+    fields_seen, fields_disappeared = refresh_field_definitions(
+        dsn, instance_id, base_url, auth, client_cert=client_cert
+    )
     fields_with_stats, sampled_issues = compute_field_stats(
         dsn, instance_id, project=project, sample_size=sample_size
     )

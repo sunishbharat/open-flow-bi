@@ -1,7 +1,7 @@
 """Write flowbi_ops.sync_run rows (docs/phase2-postgres-design.md §8).
 
 Deliberately thin control-plane bookkeeping, not one of the "write only
-these" product pieces in CLAUDE.md's library-first rule — one INSERT via
+these" product pieces under the library-first rule — one INSERT via
 SQLAlchemy Core, no ORM, no new dependency (arrives with Alembic).
 """
 
