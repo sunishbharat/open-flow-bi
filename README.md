@@ -3,6 +3,97 @@
 Self-hosted Jira flow metrics: full issue + changelog history extracted into Postgres, modeled in
 Cube, and visualized in Superset — no SaaS, no per-seat licensing.
 
+## Get started
+
+One script installs everything and walks you through setup, asking before each step. No coding
+needed: you answer a few questions and end up with a dashboard in your browser.
+
+### What you need
+
+- **Docker Desktop**, installed and running: [download it here](https://www.docker.com/products/docker-desktop/).
+  Leave it open while you install and use open-flow-bi.
+- **Windows only: Git for Windows**, from [git-scm.com](https://git-scm.com/download/win). It adds
+  the "Git Bash" window the script runs in. macOS and Linux already have a terminal that works.
+- **Your Jira details:**
+  - **Jira Cloud** (an address ending in `.atlassian.net`): your account email and an API token.
+    See [Jira Cloud setup](#jira-cloud-setup) for how to create one.
+  - **Jira Server or Data Center** (your company's own Jira): a personal access token, from your
+    Jira profile → Personal Access Tokens.
+  - **No Jira yet?** Keep the defaults the script offers. It then uses Apache's public Jira, which
+    needs no account, so you can try everything first.
+
+### Install
+
+1. **Download open-flow-bi.** On [the GitHub page](https://github.com/sunishbharat/open-flow-bi),
+   click **Code → Download ZIP** and unzip it. Or, if you use git:
+   `git clone https://github.com/sunishbharat/open-flow-bi.git`.
+2. **Open a terminal in that folder.**
+   - **Windows:** right-click the `open-flow-bi` folder → **Open Git Bash here** (on Windows 11,
+     first click **Show more options**).
+   - **macOS:** open **Terminal**, type `cd ` (with a space), drag the folder into the window, and
+     press Enter.
+3. **Run the installer:**
+
+   ```bash
+   bash scripts/quickstart.sh
+   ```
+
+4. **Choose how to install.** The script shows one menu:
+   - **Install with defaults** uses the Jira in `.env` and loads 50 issues. Out of the box that's
+     Apache's public Jira, so nothing else is asked. If `.env` has no Jira address or token, the
+     script asks for those two only. The token isn't shown as you type; that's normal.
+   - **Customize** asks about everything: your Jira address, project key, Jira type and token,
+     where the application image comes from (the one already on this machine, a prebuilt download,
+     or a build from source), and how many issues to load (50, 500, all, or a number). Start with
+     50 to see that everything works; you can load the rest later.
+
+   Pick an option with the arrow keys and Enter, or type its number. After that the script runs
+   on its own, one line per task. If you stop it, run it again later and it picks up where it
+   left off.
+
+   With [gum](https://github.com/charmbracelet/gum) installed, the menus are nicer. It's optional:
+   without it everything works the same.
+5. **Log in.** When the script finishes, it shows a box with the link, `http://localhost:8088`,
+   the username, and where the password is saved (`SUPERSET_ADMIN_PW` in `.env`). Superset can take
+   a few minutes to start the first time.
+
+### Show your data (once)
+
+The first time, Superset needs to be told where your data is:
+
+1. In Superset, go to **Settings → Database Connections → + Database → PostgreSQL**.
+2. Click **Connect this database with a SQLAlchemy URI string instead**, and paste the
+   `postgresql://...@cube:15432/db` line the script printed. Click **Test Connection**, then
+   **Connect**.
+3. Go to **Datasets → + Dataset**, and choose that database, schema `public`, table `flow`.
+4. Go to **Charts → + Chart → Bar Chart**, set the X-axis to `status_name` and the metric to
+   `count` (aggregate MAX), then click **Update chart**. Save it to a new dashboard.
+
+[Dashboard: Cube + Superset](#dashboard-cube--superset) shows more charts, such as cycle time and
+time in status.
+
+### Later
+
+| To... | Do this |
+|---|---|
+| Load new and changed issues from Jira | Run `bash scripts/quickstart.sh` again. It only fetches what changed |
+| Load all issues, not just 50 | `bash scripts/quickstart.sh --limit 0`. A large project can take hours |
+| Stop OpenFlowBI | `docker compose stop` in the same terminal, or Docker Desktop → **Containers** → `open-flow-bi` → stop |
+| Remove everything, including the data | `docker compose --profile tools down -v` in the same terminal |
+
+### If something goes wrong
+
+The script stops with a message saying what failed and what to try. Every command's full output
+is saved in `.quickstart.log` in the same folder, which is useful if you ask someone for help. The
+most common problems:
+
+| Message | What to do |
+|---|---|
+| "Docker isn't running" | Start Docker Desktop, wait until it says it's running, then run the script again |
+| `CERTIFICATE_VERIFY_FAILED` | Your antivirus or company network inspects secure connections. Install [uv](https://docs.astral.sh/uv/getting-started/installation/), delete the file `.build-ca.pem` in the folder, and run the script again |
+| "Couldn't reach Jira" | Check the Jira address and token: run the script again, choose **Customize**, then **Change them** under "Jira settings" |
+| Superset's **Test Connection** fails | Paste exactly the `postgresql://...@cube:15432/db` line the script printed. Don't use `localhost` |
+
 ## How it works
 
 ```mermaid
@@ -37,7 +128,7 @@ flowchart LR
     ops --> transform
     transform --> analytics
     analytics --> cube
-    raw -- "fast path" --> cube
+    raw -- "current issue fields" --> cube
     cube -- "SQL API" --> superset
     superset --> user
 ```
@@ -64,11 +155,14 @@ flowchart LR
 
 ## Requirements
 
+The sections from here on are for developers working on the code. To install and use the
+dashboard, [Get started](#get-started) above is all you need.
+
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)
 - Docker, for the Postgres/Cube/Superset stack, and optionally for running the pipeline itself as
   a container (see "Running with Docker")
-- A Jira Cloud or Server/Data Center instance — or just try the Quickstart below, which uses a
-  public Jira instance and needs no account
+- A Jira Cloud or Server/Data Center instance — or just try the developer quickstart below, which
+  uses a public Jira instance and needs no account
 
 ## Installation
 
@@ -96,9 +190,10 @@ Edit `.env` (see `.env.example` for prefilled defaults you can try immediately):
 | `CUBE_SQL_USER` / `CUBE_SQL_PASSWORD` | dashboard | credentials Superset uses to connect to Cube |
 | `SUPERSET_SECRET_KEY` / `SUPERSET_ADMIN_PW` | dashboard | local Superset instance |
 
-## Quickstart
+## Developer quickstart
 
-Works immediately against a public Jira instance — no account needed:
+Runs the CLI straight from the source tree, without Docker. Works immediately against a public Jira
+instance — no account needed:
 
 ```bash
 uv run flowbi doctor                          # confirms connectivity
@@ -320,7 +415,7 @@ uv run flowbi extract changelog --limit 0 --destination postgres
 fetches); expect it to take a while per project. Once every project is extracted, run one **unscoped**
 rebuild to cover all of them in a single pass — see "Field discovery and materialization" below.
 
-## Field discovery and materialization (Phase 3a)
+## Field discovery and materialization
 
 Jira's ~200+ fields (most of them custom, per-instance) live as a raw JSON blob on every issue —
 `flowbi fields` tells you which ones are actually worth having, before you write a Cube dimension
@@ -506,22 +601,41 @@ so every run names its own command. The `flowbi` service in `docker-compose.yml`
 compose Postgres: `docker compose run --rm flowbi <command>`. It's behind a `tools` profile, so a
 plain `docker compose up` never starts it.
 
-### Quickstart script
+### The quickstart script
 
-One script runs every step below, asking before each one:
+[Get started](#get-started) at the top covers using it. This is what it does, for developers. One
+script runs every step below. It asks one question up front, **Install with defaults**,
+**Customize** or **Cancel**, then runs the seven steps without stopping:
 
 ```bash
 ./scripts/quickstart.sh              # bash: Git Bash on Windows, macOS, Linux, WSL
 ./scripts/quickstart.sh --limit 0    # extract the whole project (default: 50 issues)
 ./scripts/quickstart.sh --image ghcr.io/<owner>/openflowbi-core:<version>   # download, don't build
-./scripts/quickstart.sh --yes        # accept every default, no questions
+./scripts/quickstart.sh --yes        # defaults, no questions at all
+./scripts/quickstart.sh --verbose    # stream every command's output instead of a spinner
+./scripts/quickstart.sh --no-gum     # plain prompts even if gum is installed
 ```
+
+With defaults, the only questions are the Jira address and token, and only when `.env` lacks them.
+Under `--yes` a missing one stops the script with a message instead of asking. A `--limit` or
+`--image` on the command line counts as the answer to that question, also under Customize.
+
+Command output goes to `.quickstart.log` (gitignored); the screen shows one line per task with its
+time, and a failure shows the task's last 20 log lines. Colour is off when `NO_COLOR` is set or the
+output isn't a terminal. Symbols are plain ASCII when the locale isn't UTF-8, `TERM=dumb` or
+`QUICKSTART_ASCII=1`. Spinners run only on a terminal.
+
+With [gum](https://github.com/charmbracelet/gum) installed (0.11 or newer), menus, prompts and
+spinners use it; without it, menus are numbered lists and a one-line note under step 1 says how to
+get gum. Plain prompts are also used with `--yes`, or when input isn't a terminal. In Git Bash's
+own window (mintty) gum may not receive keystrokes, so it's off there unless `QUICKSTART_GUM=1`.
+Windows Terminal and the VS Code terminal are fine.
 
 It needs only Docker and curl (`uv` too if HTTPS on your machine is inspected by antivirus or a
 proxy, to build the CA bundle). It:
 1. writes `.env`, asking for your Jira details and generating every password;
 2. creates `.build-ca.pem`;
-3. gets the `openflowbi/core:dev` image. It asks, in order, whether to:
+3. gets the `openflowbi/core:dev` image, by default the first that applies of:
    - use the copy already on this machine;
    - download a prebuilt image (for example from ghcr.io), tagged locally as
      `openflowbi/core:dev` so the compose file runs it. The script remembers the image name in
@@ -531,7 +645,8 @@ proxy, to build the CA bundle). It:
    tables;
 5. applies the database roles and starts Cube and Superset.
 
-At the end it prints the login and the Cube connection string to paste into Superset. It's safe to
+At the end it prints a box with the login, where the password is, the Cube connection string to
+paste into Superset, and the commands to update and stop. It's safe to
 re-run: existing `.env` values are kept, and extracts continue where the last run stopped. The
 sections below are the same steps by hand.
 
@@ -710,28 +825,10 @@ This deletes the database, dlt's watermarks and Superset's saved charts. Delete 
 `flowbi_dlt` together or not at all: an empty database with old watermarks makes `extract` skip
 every issue older than them.
 
-### Troubleshooting Docker
-
-| Symptom | Fix |
-|---|---|
-| `failed to stat ...\.build-ca.pem` | create it (step 1) |
-| `SSL: CERTIFICATE_VERIFY_FAILED` during the build or from `doctor` | `.build-ca.pem` is missing your proxy's root certificate: re-run `uv run python scripts/make_ca_bundle.py` (step 1) and check that every line says `OK`. It's mounted at runtime, so `doctor` needs no rebuild; a failed build does |
-| PowerShell: `The '<' operator is reserved for future use` | a bash command was pasted into PowerShell; use the PowerShell variant (pipe with `Get-Content ... -Raw \|`) |
-| `fields list` says "No fields found" | run `flowbi fields discover` first (step 4) |
-| `PermissionError: ... '/home/flowbi/.dlt/pipelines'` | a `flowbi_dlt` volume created by an older image: `docker volume rm open-flow-bi_flowbi_dlt`, rebuild, retry |
-| `dependency failed to start: container ... postgres-1 is unhealthy` | `docker compose logs postgres`; a first start initializes the database, so run the command again |
-| Chart: `relation "analytics.fix_version" does not exist` or `column "resolution_name" does not exist` | the promotions at the end of step 4 haven't run; run them, re-run step 5's two scripts, then `docker compose restart cube` |
-| `transform` reports many "skipped (incomplete changelog)" | see `--reset-watermark` under "Field discovery and materialization" |
-| Superset: `The password provided for username "" is incorrect` | the Username field was left blank, or the URI still contains `<...>` placeholders; enter the real `CUBE_SQL_USER`/`CUBE_SQL_PASSWORD` (step 5) |
-| Superset Test Connection fails | check `CUBE_SQL_USER`/`CUBE_SQL_PASSWORD` in `.env`, then `docker compose logs cube` |
-| Superset Test Connection fails, or no `flow` table, with a URI on `localhost:5433` or `localhost:15432` | the URI points at Postgres or at Superset's own container. Use `postgresql://<CUBE_SQL_USER>:<CUBE_SQL_PASSWORD>@cube:15432/db` (see "Dashboard: Cube + Superset") |
-| Chart: `password authentication failed for user "cube_reader"` | `roles.sql` ran with a `reader_pw` other than `.env`'s `CUBE_READER_PW`. Re-run it with the right value, then `docker compose restart cube`. To test, connect over the network: `psql -h postgres -U cube_reader` inside the Postgres container. A plain `psql` there is trusted without a password, so it proves nothing |
-| Superset logs `CERTIFICATE_VERIFY_FAILED` installing `psycopg2-binary` | Superset's start-up `pip install` also uses `.build-ca.pem`: re-run the script (step 1), then `docker compose up -d --force-recreate superset` |
-
 ## For developers: adding a new field/dimension to a report
 
-There's no self-service screen for this yet (that's the Phase 3b item in Roadmap) — today it's one
-small, manual YAML edit. Two paths, pick based on how the field will be used.
+There's no self-service screen for this yet (see Roadmap) — today it's one small, manual YAML
+edit. Two paths, pick based on how the field will be used.
 
 **Which path?**
 
@@ -801,7 +898,7 @@ uv run flowbi fields promote "Fix Version/s" --column fix_version
 ```
 
 Use `--target bridge_table` instead — this creates a separate table with one row per issue per value
-(same pattern the design uses for Labels/Sprint):
+(the same works for Labels, Sprint and other array fields):
 
 ```bash
 uv run flowbi fields promote "Fix Version/s" --column fix_version --target bridge_table
@@ -818,17 +915,15 @@ e.g. "Fix Version/s" itself is `fixVersions` internally, and that's handled corr
 one-to-many, same shape as `issue_status_interval.yml`) and exposed in the `flow` view as
 `fix_version_name`/`fix_version_count` — aliased because this cube's own `count` measure counts
 (issue, fix-version) pairs, not issues (an issue with 3 fix versions counts 3 times), which is a
-different meaning from the view's top-level `count`. Live-verified: `flow.fix_version_count` grouped
-by `flow.fix_version_name` matches `analytics.fix_version`'s real distribution exactly (`3.6.0` → 725,
-`0.9.0.0` → 500, `3.5.0` → 446, ...). If you promote a *different* array field to its own bridge
+different meaning from the view's top-level `count`. If you promote a *different* array field to its own bridge
 table, it needs the same small cube built fresh — `fix_version.yml` is the reference to copy, the
 same way `issue.yml`'s `resolution_name` is the reference for wide-table promoted columns.
 
 ### Two `status_name`-shaped fields, on purpose
 
-The `flow` view has both `status_name` (an issue's *current* status, from the fast path) and
-`interval_status_name` (whichever status a given *historical interval row* represents, from Phase 3a's
-status-interval table) — don't merge these into one field if extending the model further. They answer
+The `flow` view has both `status_name` (an issue's *current* status, read from the raw issue data)
+and `interval_status_name` (whichever status a given *historical interval row* represents, from the
+`analytics.issue_status_interval` table) — don't merge these into one field if extending the model further. They answer
 different questions and a status-scheme rename would silently corrupt history if they were conflated.
 
 ## Inspecting raw output
