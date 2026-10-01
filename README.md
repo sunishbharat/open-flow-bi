@@ -83,12 +83,12 @@ Edit `.env` (see `.env.example` for prefilled defaults you can try immediately):
 
 | Variable | Required for | Notes |
 |---|---|---|
-| `FLOWBI_JIRA_BASE_URL` | always | e.g. `https://your-domain.atlassian.net` or `https://jira.your-company.com` |
+| `FLOWBI_JIRA_BASE_URL` | always | e.g. `https://your-domain.atlassian.net` or `https://jira.example.com` |
 | `FLOWBI_JIRA_EMAIL` + `FLOWBI_JIRA_API_TOKEN` | Jira Cloud | the Atlassian account's email + an API token — see "Connecting to your own Jira" |
 | `FLOWBI_JIRA_PAT` | Jira Server/DC | personal access token |
 | `FLOWBI_JIRA_DEPLOYMENT` | optional | `cloud` or `server` — skips auto-detection; set it for mTLS-protected instances |
 | `FLOWBI_JIRA_CLIENT_CERT_B64` + `FLOWBI_JIRA_CLIENT_KEY_B64` | mTLS only | client certificate + private key, each a base64-encoded PEM, set together |
-| `REQUESTS_CA_BUNDLE` | corporate TLS proxy only | path to a CA bundle (public CAs + your company's root CA) |
+| `REQUESTS_CA_BUNDLE` | TLS-inspecting proxy only | path to a CA bundle (public CAs + your network's root CA) |
 | `FLOWBI_JIRA_PROJECT` | optional | limit extraction to one project key, e.g. `KAFKA` |
 | `FLOWBI_JIRA_INSTANCE_ID` | optional | stable name for this Jira in the database; defaults to the URL's host |
 | `FLOWBI_POSTGRES_DSN` | Postgres / dashboard | connection string for the local `docker-compose` Postgres |
@@ -117,45 +117,13 @@ its own, and picks the matching API and authentication.
 
 ### Jira Cloud (`*.atlassian.net`)
 
-1. Create an API token at https://id.atlassian.com/manage-profile/security/api-tokens, signed in as
-   the account `flowbi` should read Jira as. Use a regular API token; scoped API tokens are routed
-   through `api.atlassian.com` and aren't supported yet.
-2. In `.env`, replace the prefilled Apache values:
-
-   ```bash
-   FLOWBI_JIRA_BASE_URL=https://your-domain.atlassian.net
-   FLOWBI_JIRA_EMAIL=you@your-company.com       # the email of the account that owns the token
-   FLOWBI_JIRA_API_TOKEN=<the token>
-   FLOWBI_JIRA_PAT=                             # clear the Server/DC placeholder
-   FLOWBI_JIRA_PROJECT=ABC                      # optional
-   # FLOWBI_JIRA_DEPLOYMENT=cloud               # optional, skips auto-detection
-   ```
-
-3. Check:
-
-   ```bash
-   uv run flowbi doctor                        # expect: Deployment = Cloud, and an account timezone
-   uv run flowbi extract issues --limit 5
-   ```
-
-Things specific to Cloud:
-
-- **Email and token must belong to the same account.** Cloud uses both together (HTTP Basic auth).
-  A token on its own won't work.
-- **Everything is read with that account's permissions.** Issues in projects it can't browse are
-  never extracted. A dedicated service account with read access to the projects you need is the
-  cleanest setup.
-- **Wrong credentials stop the run.** Cloud can answer a search made with bad credentials with an
-  empty result rather than a 401, so `flowbi` checks the account first (`GET /myself`) and stops
-  with "Jira Cloud rejected the credentials..." rather than loading nothing. `flowbi doctor` shows
-  the same check as "Account timezone".
-- **Cloud rate limits are shared site-wide.** Start with `--limit` and scope large first runs by
-  project (`FLOWBI_JIRA_PROJECT`) rather than pulling the whole site at once.
+See [Jira Cloud setup](#jira-cloud-setup) below. It covers the settings, network
+requirements, verification steps and known limitations in one place.
 
 ### Jira Server / Data Center
 
 ```bash
-FLOWBI_JIRA_BASE_URL=https://jira.your-company.com
+FLOWBI_JIRA_BASE_URL=https://jira.example.com
 FLOWBI_JIRA_PAT=<personal access token>     # Jira: Profile → Personal Access Tokens
 FLOWBI_JIRA_EMAIL=                          # not used on Server/DC
 FLOWBI_JIRA_API_TOKEN=
@@ -163,7 +131,7 @@ FLOWBI_JIRA_API_TOKEN=
 
 ### Jira behind mutual TLS (client certificate)
 
-Some company Jira instances also require a client certificate. Without it, every request fails with
+Some self-hosted Jira instances also require a client certificate. Without it, every request fails with
 a connection reset (`RemoteDisconnected` / `Connection aborted`) before Jira returns any response,
 which looks like a firewall problem. Get a certificate (usually a `.pfx`) from your PKI team, then:
 
@@ -191,10 +159,10 @@ Delete the local `.pem` files afterwards. `flowbi` writes them to a private temp
 for the duration of each command. Setting only one of the two variables is an error.
 `flowbi doctor` shows "mTLS client cert: configured" when both are set.
 
-### Behind a TLS-inspecting corporate proxy
+### Behind a TLS-inspecting proxy
 
 If `flowbi doctor` fails with an SSL certificate verification error, your network is re-signing
-HTTPS traffic with a company root certificate. Build a combined bundle of the public CAs plus that
+HTTPS traffic with its own root certificate. Build a combined bundle of the public CAs plus that
 root, then point `REQUESTS_CA_BUNDLE` at it:
 
 ```bash
@@ -202,7 +170,7 @@ uv run python scripts/make_ca_bundle.py --out combined-ca.pem   # public CAs + y
 export REQUESTS_CA_BUNDLE=$PWD/combined-ca.pem                  # PowerShell: $env:REQUESTS_CA_BUNDLE = "$PWD\combined-ca.pem"
 ```
 
-It must be the combined file: pointing it at the company root alone breaks every other HTTPS host.
+It must be the combined file: pointing it at that root alone breaks every other HTTPS host.
 Antivirus TLS scanning (e.g. Norton Web/Mail Shield) does the same re-signing, and the script picks
 its root up the same way. The Docker stack uses its own copy of this bundle, `.build-ca.pem` (see
 "Running with Docker").
@@ -212,11 +180,104 @@ its root up the same way. The Docker stack uses its own copy of this bundle, `.b
 | Symptom | Likely cause |
 |---|---|
 | `RemoteDisconnected` / `Connection aborted`, no HTTP status | mTLS required: set the client certificate (above), or a firewall is blocking the host |
-| `SSLError` / `certificate verify failed` | corporate TLS proxy: set `REQUESTS_CA_BUNDLE` (above) |
+| `SSLError` / `certificate verify failed` | TLS-inspecting proxy: set `REQUESTS_CA_BUNDLE` (above) |
 | `doctor` shows "Account timezone: unavailable (check credentials)" | wrong token, or (Cloud) email and token from different accounts |
 | "Jira Cloud rejected the credentials" | email and token wrong, expired, or from different accounts |
 | Cloud extraction succeeds but loads 0 issues | the account can't browse that project, or `FLOWBI_JIRA_PROJECT` is wrong |
 | `401` | wrong or expired token/PAT |
+
+## Jira Cloud setup
+
+Everything needed to point open-flow-bi at an Atlassian Cloud site (`*.atlassian.net`), in one
+place. The same `openflowbi/core` Docker image runs both Cloud and Server/DC: the Jira type is chosen
+at runtime from the settings below, so switching to Cloud needs no rebuild.
+
+### 1. Create the credentials
+
+1. Use a **dedicated service account** with browse access to the projects you need. flowbi reads
+   Jira with that account's permissions, so issues it can't see are never extracted.
+2. Signed in as that account, create a **classic API token** at
+   https://id.atlassian.com/manage-profile/security/api-tokens. Scoped API tokens (routed through
+   `api.atlassian.com`) aren't supported yet.
+3. If your organization manages Atlassian accounts through SSO (Atlassian Guard), ask your Atlassian admin
+   to allow API tokens for the service account. Some org policies disable them.
+
+### 2. Settings
+
+Set these in `.env` (locally and for `docker compose run --rm flowbi ...`), or as environment
+variables on your deployment platform:
+
+```bash
+FLOWBI_JIRA_BASE_URL=https://your-site.atlassian.net
+FLOWBI_JIRA_DEPLOYMENT=cloud                     # skips auto-detection
+FLOWBI_JIRA_EMAIL=svc-flowbi@example.com    # must own the token below
+FLOWBI_JIRA_API_TOKEN=<api token>
+FLOWBI_JIRA_PAT=                                 # must be empty: clear the Server/DC placeholder
+FLOWBI_JIRA_PROJECT=ABC                          # start with one project
+FLOWBI_JIRA_CLIENT_CERT_B64=                     # leave empty: Atlassian Cloud doesn't use client certificates
+FLOWBI_JIRA_CLIENT_KEY_B64=
+```
+
+The email and token are used together (HTTP Basic auth); a token on its own won't work.
+
+### 3. Network requirements
+
+| If your network has... | Configure |
+|---|---|
+| TLS inspection (Zscaler, a proxy, antivirus) | Run `uv run python scripts/make_ca_bundle.py` on a machine inside that network and check that every line says `OK`, including `your-site.atlassian.net`. Docker uses the resulting `.build-ca.pem`; a local run needs `REQUESTS_CA_BUNDLE` pointing at it (see [above](#behind-a-tls-inspecting-proxy)) |
+| An explicit outbound HTTP proxy | Add `HTTPS_PROXY=http://<proxy-host>:<port>` and `NO_PROXY=postgres,localhost` to `.env`. Compose passes `.env` into the container |
+| An Atlassian IP allowlist | Add the egress IP of the machine or platform running flowbi. Otherwise every request is rejected, even with valid credentials |
+| A firewall or egress rules | Allow outbound HTTPS (443) to `*.atlassian.net` |
+
+### 4. Verify
+
+```bash
+uv run flowbi doctor
+# expect: Deployment = Cloud, an account timezone, and "mTLS client cert: not configured"
+uv run flowbi extract issues    --destination postgres --limit 20
+uv run flowbi extract changelog --destination postgres --limit 20
+```
+
+With Docker, prefix each command with `docker compose run --rm flowbi` (for example
+`docker compose run --rm flowbi flowbi doctor`).
+
+Check that the changelog came through the fast path:
+
+```sql
+SELECT source, count(*) FROM jira_raw.issue_changelog GROUP BY source;
+-- mostly 'expand' is expected; 'bulkfetch' and 'per_issue' are slower fallbacks
+```
+
+Only then move to `--limit 0`, one project at a time.
+
+### 5. Things to know about Cloud
+
+- **Rate limits are shared across the whole Atlassian site**, roughly 65,000 points an hour for every
+  integration together. flowbi doesn't yet slow itself down as that budget runs low, so a large
+  backfill can crowd out other tools on the same site. Extract one project at a time, use `--limit`,
+  and run large first loads outside working hours.
+- **Wrong credentials stop the run.** Cloud can answer a search made with bad credentials with an
+  empty result instead of a `401`. flowbi checks the account first (`GET /myself`) and stops with
+  "Jira Cloud rejected the credentials..." rather than loading nothing.
+- **Search results take seconds to minutes to appear.** Cloud's search index is eventually
+  consistent. Each incremental run re-reads the last hour to catch late arrivals, so nothing is
+  missed.
+- **Changelog authors are empty on Cloud.** Atlassian removed the field flowbi currently reads for
+  privacy reasons. Status history and cycle times are unaffected.
+- **Changelogs come from a three-step fallback.** flowbi first asks for them with the search, then
+  uses Cloud's bulk changelog endpoint (still experimental at Atlassian), then fetches one issue at a
+  time. Each step is tried automatically if the previous one isn't available.
+
+### Cloud troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| "Jira Cloud rejected the credentials" | email and token wrong, expired, from different accounts, or API tokens disabled by your org's policy |
+| `doctor` shows "Account timezone: unavailable" | same as above |
+| Extraction succeeds but loads 0 issues | the service account can't browse the project, or `FLOWBI_JIRA_PROJECT` is wrong |
+| `certificate verify failed` | TLS inspection: regenerate the CA bundle (step 3) |
+| Connection timeout or refused | firewall, proxy (`HTTPS_PROXY`) or Atlassian IP allowlist (step 3) |
+| `429 Too Many Requests` | the site-wide rate limit is exhausted: wait, then continue with a smaller `--limit` |
 
 ## CLI
 
@@ -478,7 +539,7 @@ uv run python scripts/make_ca_bundle.py
 
 This writes the public CAs plus every root certificate your operating system already trusts
 (Windows certificate store, macOS keychains, or the Linux system bundle). Anything that re-signs
-HTTPS on your network, such as a corporate proxy, Zscaler or antivirus TLS scanning, installs its
+HTTPS on your network, such as a proxy, Zscaler or antivirus TLS scanning, installs its
 root there, so you don't need to know which tool it is or where its certificate lives. Without one,
 the extra roots do no harm.
 
@@ -494,7 +555,7 @@ wrote .build-ca.pem: 121 public CAs + 41 from this machine's trust store
 `OK` on every line means you're done. `FAILED` means something re-signs that traffic with a root
 this machine doesn't trust either. Get that root certificate from your IT team, append it to the
 file, and run the check again with `--check-host <host>`. Re-run the script whenever your proxy,
-antivirus or company root certificate changes.
+antivirus or network root certificate changes.
 
 To keep the bundle somewhere else, write it with `--out <path>` and set `FLOWBI_BUILD_CA_BUNDLE` to
 that path.
