@@ -33,10 +33,9 @@ PROFILE = DeploymentProfile(
     instance_id=INSTANCE_ID,
 )  # type: ignore[arg-type]
 
-# Four issues, one per day, each carrying one changelog history item — an
-# issue with zero histories yields zero flatten.changelog() rows, so it can
-# never end up in issue_dirty from that load (see pipeline/source.py's
-# issue_changelog comment).
+# Four issues, one per day, each carrying one changelog history item.
+# Dirty-marking reads jira_raw.issue_changelog_status (one row per extracted
+# issue), so an issue with zero histories would be marked dirty too.
 def _row(issue_id: int, day: int, history_suffix: str = "") -> dict[str, Any]:
     history_id = f"h{issue_id}{history_suffix}"
     return {
@@ -58,11 +57,9 @@ def _row(issue_id: int, day: int, history_suffix: str = "") -> dict[str, Any]:
 
 ROWS_RUN_1 = [_row(1, 1), _row(2, 2), _row(3, 3), _row(4, 4)]
 # Between the two runs: issue 3 transitions again (a new history_id, a later
-# `updated`) and issue 5 is newly created. Issue 4 is untouched — included
-# again by the JQL floor (inclusive `updated >=`), but with the exact same
-# primary key and cursor value as run 1, so dlt's own incremental
-# deduplication (Incremental.primary_key) must filter it out before it ever
-# reaches the destination.
+# `updated`) and issue 5 is newly created. Issue 4 is untouched, but it is
+# the old watermark, so the 1-hour overlap re-reads it (see the run-2
+# assertions below).
 ROWS_RUN_2 = [_row(1, 1), _row(2, 2), _row(3, 5, history_suffix="b"), _row(4, 4), _row(5, 6)]
 
 _FLOOR_RE = re.compile(r'updated >= "([^"]+)"')
@@ -160,13 +157,54 @@ def test_issue_dirty_has_exactly_the_touched_ids_per_load(tmp_path, postgres_dsn
     assert _dirty_ids(postgres_dsn) == {1, 2, 3, 4}
 
     # Run 2 (M7.5 acceptance, docs/phase2-postgres-design.md §14): only issue
-    # 3 (transitioned again) and issue 5 (new) actually changed. Issue 4 is
-    # re-included by the inclusive `updated >= floor` JQL filter but is
-    # byte-for-byte the same primary key + cursor value as run 1, so dlt's
-    # incremental dedup must drop it before it reaches the destination —
-    # this load must touch exactly {3, 5}, and issue_dirty (cumulative) must
-    # gain issue 5 while leaving 1, 2 and 4 alone.
+    # 3 (transitioned again) and issue 5 (new) actually changed. Issue 4 sits
+    # at the old watermark, inside the 1-hour overlap (OVERLAP_SECONDS,
+    # architecture review finding 2). dlt turns its boundary dedup off when
+    # `lag` is set and leaves deduplication to the destination's merge, so
+    # issue 4 is reloaded (same row, merged in place) and re-marked dirty,
+    # an idempotent rebuild. Issues 1 and 2, outside the overlap, must stay
+    # untouched.
     info = _run(ROWS_RUN_2)
     assert not info.has_failed_jobs
-    assert _load_touched_ids(postgres_dsn, list(info.loads_ids)) == {3, 5}
+    assert _load_touched_ids(postgres_dsn, list(info.loads_ids)) == {3, 4, 5}
     assert _dirty_ids(postgres_dsn) == {1, 2, 3, 4, 5}
+
+
+def _run_once(dsn: str, pipelines_dir: Any) -> Any:
+    with (
+        patch("openflowbi.pipeline.source.deployment_mod.account_timezone", return_value="UTC"),
+        patch(
+            "openflowbi.pipeline.source._search_pages",
+            side_effect=_fake_search_pages(ROWS_RUN_1),
+        ),
+    ):
+        return pipeline_run.run(
+            PROFILE,
+            project="PROJ",
+            destination="postgres",
+            postgres_dsn=dsn,
+            pipelines_dir=str(pipelines_dir),
+            resources=("issue_changelog",),
+        )
+
+
+def test_a_failed_dirty_mark_fails_the_command(tmp_path, postgres_dsn):
+    # Architecture review finding 8: incremental transform only rebuilds
+    # what issue_dirty lists, so a swallowed failure here meant those issues
+    # were silently never rebuilt.
+    with (
+        patch("openflowbi.pipeline.dirty.mark_dirty", side_effect=RuntimeError("boom")),
+        pytest.raises(pipeline_run.DirtyMarkError, match="--rebuild-all"),
+    ):
+        _run_once(postgres_dsn, tmp_path / ".dlt")
+    assert _dirty_ids(postgres_dsn) == set()
+
+
+def test_an_unmigrated_flowbi_ops_only_warns(tmp_path, postgres_dsn):
+    engine = sa.create_engine(postgres_dsn)
+    with engine.begin() as conn:
+        conn.execute(sa.text("DROP SCHEMA flowbi_ops CASCADE"))
+    engine.dispose()
+
+    info = _run_once(postgres_dsn, tmp_path / ".dlt")
+    assert not info.has_failed_jobs

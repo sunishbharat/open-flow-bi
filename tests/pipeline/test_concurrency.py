@@ -18,10 +18,12 @@ offline. Run explicitly: `uv run pytest -m postgres tests/pipeline/test_concurre
 
 import re
 import threading
+import time
 from collections.abc import Iterator
 from typing import Any
 from unittest.mock import patch
 
+import dlt
 import pytest
 import sqlalchemy as sa
 from testcontainers.community.postgres import PostgresContainer
@@ -69,7 +71,10 @@ def _rows(project: str, start_id: int, n: int) -> list[dict[str, Any]]:
     ]
 
 
-def _fake_search_pages(rows_by_project: dict[str, list[dict[str, Any]]]):
+def _fake_search_pages(
+    rows_by_project: dict[str, list[dict[str, Any]]],
+    barrier: threading.Barrier | None = None,
+):
     """One shared fake, keyed by the `project = ...` clause `_jql` builds —
     applied as a single patch around all threads (not one `with patch(...)`
     per thread), since two concurrent `with patch(...)` blocks on the same
@@ -79,6 +84,11 @@ def _fake_search_pages(rows_by_project: dict[str, list[dict[str, Any]]]):
     def fake(profile: Any, jql: str, expand: str | None = None) -> Iterator[dict[str, Any]]:
         match = _PROJECT_RE.search(jql)
         assert match, f"expected a 'project = ...' clause, got: {jql}"
+        if barrier is not None:
+            # Every project must be mid-extraction at once to get past this.
+            # If extraction ran under the load lock, the second project would
+            # wait on the lock, and this would time out (BrokenBarrierError).
+            barrier.wait(timeout=60)
         yield from rows_by_project[match.group(1)]
 
     return fake
@@ -116,12 +126,25 @@ def test_concurrent_projects(postgres_dsn: str, tmp_path: Any) -> None:
         except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`, not swallowed
             errors.append(exc)
 
+    # Architecture review finding 7: extraction overlaps across projects (the
+    # barrier above), and only the load step is serialized (these spans).
+    load_spans: list[tuple[float, float]] = []
+    real_load = dlt.Pipeline.load
+
+    def timed_load(self: Any, *args: Any, **kwargs: Any) -> Any:
+        started = time.monotonic()
+        try:
+            return real_load(self, *args, **kwargs)
+        finally:
+            load_spans.append((started, time.monotonic()))
+
     with (
         patch("openflowbi.pipeline.source.deployment_mod.account_timezone", return_value="UTC"),
         patch(
             "openflowbi.pipeline.source._search_pages",
-            side_effect=_fake_search_pages(rows_by_project),
+            side_effect=_fake_search_pages(rows_by_project, threading.Barrier(len(PROJECTS))),
         ),
+        patch.object(dlt.Pipeline, "load", timed_load),
     ):
         threads = [threading.Thread(target=worker, args=(p,)) for p in PROJECTS]
         for t in threads:
@@ -131,6 +154,10 @@ def test_concurrent_projects(postgres_dsn: str, tmp_path: Any) -> None:
 
     assert not errors, errors
     assert not any(info.has_failed_jobs for info in results.values())
+    assert len(load_spans) == len(PROJECTS)
+    spans = sorted(load_spans)
+    for (_, first_end), (second_start, _) in zip(spans, spans[1:], strict=False):
+        assert first_end <= second_start, "two loads overlapped under the advisory lock"
 
     engine = sa.create_engine(postgres_dsn)
     with engine.connect() as conn:

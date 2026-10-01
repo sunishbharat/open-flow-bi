@@ -1,0 +1,39 @@
+interactions:
+- request:
+    body: '{"issueIdsOrKeys": ["10001", "10002"]}'
+    headers:
+      Content-Type:
+      - application/json
+    method: POST
+    uri: https://example.atlassian.net/rest/api/3/changelog/bulkfetch
+  response:
+    body:
+      # Hand-authored, not recorded from live traffic — no Cloud tenant is
+      # available yet. Page 1 of 2: issue 10001's histories are split across
+      # both pages, and the top-level nextPageToken asks for the rest.
+      string: '{"issueChangeLogs":[{"issueId":"10001","changeHistories":[{"id":"9001","created":"2026-01-01T00:00:00.000+0000","items":[{"field":"status","fieldId":"status","from":"1","fromString":"To Do","to":"2","toString":"In Progress"}]}]}],"nextPageToken":"page-2"}'
+    headers:
+      Content-Type:
+      - application/json;charset=UTF-8
+    status:
+      code: 200
+      message: ''
+- request:
+    body: '{"issueIdsOrKeys": ["10001", "10002"], "nextPageToken": "page-2"}'
+    headers:
+      Content-Type:
+      - application/json
+    method: POST
+    uri: https://example.atlassian.net/rest/api/3/changelog/bulkfetch
+  response:
+    body:
+      # Page 2 of 2: the rest of 10001, then 10002. No nextPageToken, so the
+      # walk ends here.
+      string: '{"issueChangeLogs":[{"issueId":"10001","changeHistories":[{"id":"9002","created":"2026-01-02T00:00:00.000+0000","items":[{"field":"status","fieldId":"status","from":"2","fromString":"In Progress","to":"3","toString":"Done"}]}]},{"issueId":"10002","changeHistories":[{"id":"9003","created":"2026-01-03T00:00:00.000+0000","items":[]}]}]}'
+    headers:
+      Content-Type:
+      - application/json;charset=UTF-8
+    status:
+      code: 200
+      message: ''
+version: 1

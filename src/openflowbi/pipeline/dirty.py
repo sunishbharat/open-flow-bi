@@ -31,11 +31,31 @@ DIRTY_REASONS = {
     "issue_changelog": "changelog_extracted",
 }
 
+# dlt resource name -> the jira_raw table whose rows say which issues a load
+# touched. issue_changelog reads its status table, not its item rows: every
+# extracted issue has exactly one status row, including an issue with no
+# history items, which has no item row at all.
+DIRTY_TABLES = {
+    "issues": "issues",
+    "issue_changelog": "issue_changelog_status",
+}
+
+
+def ops_ready(dsn: str) -> bool:
+    """Whether flowbi_ops.issue_dirty exists (Alembic has been run)."""
+    engine = sa.create_engine(dsn)
+    try:
+        with engine.connect() as conn:
+            found = conn.execute(sa.text("SELECT to_regclass('flowbi_ops.issue_dirty')"))
+            return found.scalar_one() is not None
+    finally:
+        engine.dispose()
+
 
 def mark_dirty(dsn: str, instance_id: str, table: str, load_ids: list[str], reason: str) -> int:
     """Upsert (instance_id, issue_id) pairs touched by `load_ids` into flowbi_ops.issue_dirty.
 
-    `table` is always one of DIRTY_REASONS' keys (our own constants, never
+    `table` is always one of DIRTY_TABLES' values (our own constants, never
     user input), so building the identifier by f-string is safe here — dlt
     owns `jira_raw` and this only ever reads from it (P2-D1: "if dlt created
     it, only dlt changes it" — a SELECT is not a change).
@@ -45,6 +65,13 @@ def mark_dirty(dsn: str, instance_id: str, table: str, load_ids: list[str], reas
     engine = sa.create_engine(dsn)
     try:
         with engine.begin() as conn:
+            exists = conn.execute(
+                sa.text("SELECT to_regclass(:name)"), {"name": f"jira_raw.{table}"}
+            ).scalar_one()
+            if exists is None:
+                # dlt creates a table on its first load; none yet means no
+                # load has written to it, so there's nothing to mark.
+                return 0
             rows = conn.execute(
                 sa.text(
                     f'SELECT DISTINCT issue_id FROM "jira_raw"."{table}" '  # noqa: S608

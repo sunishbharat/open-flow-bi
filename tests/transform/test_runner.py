@@ -53,6 +53,13 @@ def postgres_dsn() -> Iterator[str]:
                     "field_id text, from_id text, from_value text, to_id text, to_value text)"
                 )
             )
+            conn.execute(
+                sa.text(
+                    "CREATE TABLE jira_raw.issue_changelog_status (instance_id text, "
+                    "issue_id bigint, source text, changelog_complete boolean, "
+                    "history_count bigint, updated_at timestamptz)"
+                )
+            )
         ops_metadata.create_all(engine)
         analytics_metadata.create_all(engine)
         with engine.begin() as conn:
@@ -119,6 +126,37 @@ def _insert_status_change(
                 "ti": to_id,
                 "tv": to_value,
             },
+        )
+    engine.dispose()
+
+
+def _mark_changelog_extracted(
+    dsn: str, issue_id: int, updated_at: datetime, complete: bool = True
+) -> None:
+    """What `extract changelog` records per issue (flatten.changelog_status).
+    `updated_at` is the issue's `updated` the extraction saw; _insert_issue
+    sets the issue's own updated_at to its created_at.
+    """
+    engine = sa.create_engine(dsn)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO jira_raw.issue_changelog_status (instance_id, issue_id, source, "
+                "changelog_complete, history_count, updated_at) "
+                "VALUES (:i, :n, 'expand', :c, 0, :u)"
+            ),
+            {"i": INSTANCE_ID, "n": issue_id, "c": complete, "u": updated_at},
+        )
+    engine.dispose()
+
+
+def _mark_dirty(dsn: str, issue_id: int) -> None:
+    engine = sa.create_engine(dsn)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.insert(issue_dirty).values(
+                instance_id=INSTANCE_ID, issue_id=issue_id, reason="test_changelog_extracted"
+            )
         )
     engine.dispose()
 
@@ -290,6 +328,30 @@ def test_camel_case_jira_field_id_does_not_crash_transform(postgres_dsn: str) ->
     assert [row[0] for row in values] == ["3.6.0", "3.7.0"]
 
 
+def test_bridge_table_named_after_a_reserved_word_works(postgres_dsn: str) -> None:
+    # Architecture review finding 13: `order` passes validate_identifier but
+    # broke the unquoted bridge-table DDL.
+    _insert_issue(postgres_dsn, 6, T0, {"status": {"id": "1"}, "labels": ["a"]})
+    selection.save_selection(
+        postgres_dsn,
+        INSTANCE_ID,
+        [
+            selection.SelectionChange(
+                field_name="Labels",
+                schema_type="array",
+                field_id="labels",
+                promote=True,
+                column_name="order",
+                target="bridge_table",
+            )
+        ],
+        actor="test",
+    )
+
+    result = runner.run_transform(postgres_dsn, INSTANCE_ID, rebuild_all=True)
+    assert result.bridge_rows == 1
+
+
 # --- 3a.5: rebuild_request queue ----------------------------------------------
 
 
@@ -344,6 +406,8 @@ def test_rebuild_request_is_drained_and_marked_succeeded(postgres_dsn: str) -> N
 def test_incremental_transform_touches_only_the_dirty_issue(postgres_dsn: str) -> None:
     _insert_issue(postgres_dsn, 10, T0, {"status": {"id": "1", "name": "Open"}})
     _insert_issue(postgres_dsn, 11, T0, {"status": {"id": "1", "name": "Open"}})
+    _mark_changelog_extracted(postgres_dsn, 10, T0)
+    _mark_changelog_extracted(postgres_dsn, 11, T0)
     runner.run_transform(postgres_dsn, INSTANCE_ID, rebuild_all=True)
 
     rows_10_before = _interval_rows(postgres_dsn, 10)
@@ -352,14 +416,7 @@ def test_incremental_transform_touches_only_the_dirty_issue(postgres_dsn: str) -
 
     # Issue 10 transitions; issue 11 is untouched. Only issue 10 is marked dirty.
     _insert_status_change(postgres_dsn, 10, "h1", T1, "1", "Open", "2", "Done")
-    engine = sa.create_engine(postgres_dsn)
-    with engine.begin() as conn:
-        conn.execute(
-            sa.insert(issue_dirty).values(
-                instance_id=INSTANCE_ID, issue_id=10, reason="test_changelog_extracted"
-            )
-        )
-    engine.dispose()
+    _mark_dirty(postgres_dsn, 10)
 
     result = runner.run_transform(postgres_dsn, INSTANCE_ID)  # incremental, default
     assert result.claimed == 1
@@ -371,3 +428,140 @@ def test_incremental_transform_touches_only_the_dirty_issue(postgres_dsn: str) -
         (1, "2", "Done", T1, None, None),
     ]
     assert rows_11_after == rows_11_before  # untouched — the literal 3a.6 line
+
+
+# --- R3 (architecture review finding 4): never build from an unknown changelog
+
+
+def test_issue_with_no_changelog_extracted_is_skipped_by_transform(postgres_dsn: str) -> None:
+    # No status row: `extract changelog` never ran for this issue. Building
+    # would seed seq=0 from the current status, open-ended since created_at:
+    # a plausible, wrong time-in-status. The issue's own columns still build.
+    _insert_issue(postgres_dsn, 20, T0, {"status": {"id": "3", "name": "Done"}})
+    _mark_dirty(postgres_dsn, 20)
+
+    result = runner.run_transform(postgres_dsn, INSTANCE_ID)
+
+    assert result.claimed == 1
+    assert result.skipped_incomplete == 1
+    assert _interval_rows(postgres_dsn, 20) == []
+    assert result.issue_rows == 1
+
+
+def test_incomplete_or_stale_changelog_is_skipped_but_a_complete_one_builds(
+    postgres_dsn: str,
+) -> None:
+    for issue_id in (21, 22, 23):
+        _insert_issue(postgres_dsn, issue_id, T1, {"status": {"id": "1", "name": "Open"}})
+    _mark_changelog_extracted(postgres_dsn, 21, T1, complete=False)  # per-issue tier failed
+    _mark_changelog_extracted(postgres_dsn, 22, T0)  # extracted before the issue last changed
+    _mark_changelog_extracted(postgres_dsn, 23, T1)
+
+    result = runner.run_transform(postgres_dsn, INSTANCE_ID, rebuild_all=True)
+
+    assert result.skipped_incomplete == 2
+    assert _interval_rows(postgres_dsn, 21) == []
+    assert _interval_rows(postgres_dsn, 22) == []
+    assert _interval_rows(postgres_dsn, 23) == [(0, "1", "Open", T1, None, None)]
+
+
+# --- R6 (architecture review findings 14 and 15) -------------------------------
+
+
+def _promote_story_points(dsn: str, schema_type: str = "number") -> None:
+    selection.save_selection(
+        dsn,
+        INSTANCE_ID,
+        [
+            selection.SelectionChange(
+                field_name="Story Points",
+                schema_type=schema_type,
+                field_id="customfield_10016",
+                promote=True,
+                column_name="story_points",
+                target="column",
+            )
+        ],
+        actor="test",
+    )
+
+
+def _story_points(dsn: str) -> dict[int, object]:
+    engine = sa.create_engine(dsn)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            sa.text("SELECT issue_id, story_points FROM analytics.issue WHERE instance_id = :i"),
+            {"i": INSTANCE_ID},
+        ).fetchall()
+    engine.dispose()
+    return {row[0]: row[1] for row in rows}
+
+
+def test_a_malformed_typed_value_becomes_null_instead_of_wedging_transform(
+    postgres_dsn: str,
+) -> None:
+    # A hard ::numeric cast aborted the whole transaction, including the
+    # issue_dirty claim, so every later run hit the same row again.
+    _insert_issue(postgres_dsn, 30, T0, {"customfield_10016": 5})
+    _insert_issue(postgres_dsn, 31, T0, {"customfield_10016": "five"})
+    _promote_story_points(postgres_dsn)
+
+    runner.run_transform(postgres_dsn, INSTANCE_ID, rebuild_all=True)
+
+    assert _story_points(postgres_dsn) == {30: 5, 31: None}
+
+
+def test_a_column_of_another_type_is_skipped_instead_of_wedging_transform(
+    postgres_dsn: str,
+) -> None:
+    # The field was promoted as a number before, and now as a string, under the same column
+    # name. Postgres has no assignment cast from text to numeric, so every run failed.
+    engine = sa.create_engine(postgres_dsn)
+    with engine.begin() as conn:
+        conn.execute(sa.text("ALTER TABLE analytics.issue ADD COLUMN story_points numeric"))
+    engine.dispose()
+    _insert_issue(postgres_dsn, 32, T0, {"customfield_10016": "5"})
+    _promote_story_points(postgres_dsn, schema_type="string")
+    _mark_dirty(postgres_dsn, 32)
+
+    result = runner.run_transform(postgres_dsn, INSTANCE_ID)
+
+    assert result.issue_rows == 1  # the rest of the transform still ran
+    assert _story_points(postgres_dsn) == {32: None}  # the mismatched column was left alone
+
+
+def test_a_rebuild_request_left_running_by_a_crash_is_run_again(postgres_dsn: str) -> None:
+    _insert_issue(postgres_dsn, 33, T0, {"customfield_10016": 8})
+    _promote_story_points(postgres_dsn)  # queues a rebuild request (finding 11)
+    engine = sa.create_engine(postgres_dsn)
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text("UPDATE flowbi_ops.rebuild_request SET status = 'running', started_at = now()")
+        )
+    engine.dispose()
+
+    outcomes = runner.drain_rebuild_queue(postgres_dsn, INSTANCE_ID)
+
+    assert [outcome.status for outcome in outcomes] == ["succeeded"]
+    assert _story_points(postgres_dsn) == {33: 8}
+
+
+def test_a_second_transform_waits_for_the_first(postgres_dsn: str) -> None:
+    import threading
+
+    from openflowbi.pipeline.locks import transform_lock
+
+    _insert_issue(postgres_dsn, 34, T0, {})
+    finished = threading.Event()
+
+    def second_run() -> None:
+        runner.run_transform(postgres_dsn, INSTANCE_ID, rebuild_all=True)
+        finished.set()
+
+    with transform_lock(postgres_dsn):  # stands in for a first, long-running transform
+        thread = threading.Thread(target=second_run)
+        thread.start()
+        assert not finished.wait(timeout=2)
+
+    thread.join(timeout=30)
+    assert finished.is_set()

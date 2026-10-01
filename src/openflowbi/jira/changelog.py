@@ -1,13 +1,24 @@
+import itertools
 from collections.abc import Iterable, Iterator
 from typing import Any
 
 import requests
+import structlog
 from dlt.sources.helpers.rest_client.auth import AuthConfigBase
 from dlt.sources.helpers.rest_client.paginators import OffsetPaginator
 
 from openflowbi.cloud.http import ClientCert, make_client
 
+logger = structlog.get_logger(__name__)
+
 PER_ISSUE_PAGE_SIZE = 100
+
+# Documented maximum of issueIdsOrKeys per bulkfetch request.
+BULKFETCH_MAX_ISSUES = 1000
+
+# Issues fetch() resolves together: one search page (pipeline/source.py's
+# PAGE_SIZE, which passes it explicitly).
+FETCH_BATCH_SIZE = 50
 
 # (issue_id, source tier, complete, raw histories)
 ChangelogBatch = tuple[str, str, bool, list[dict[str, Any]]]
@@ -40,22 +51,59 @@ def fetch_bulk(
     rather than a clean 404 it routes unknown paths to its normal web UI,
     returning HTML with a 200 status — so "unavailable" is detected by a
     non-JSON response, not just a 404 status code.
+
+    The endpoint caps issues per request and pages its histories with a
+    top-level nextPageToken (architecture review finding 5), so ids are sent
+    in chunks and every page of a chunk is read. A chunk is only returned
+    once all of its pages are in: an issue split across pages must never be
+    yielded as complete with half its history. A chunk the endpoint rejects
+    (4xx other than auth) is left out, so its issues fall through to the
+    per-issue tier instead of crashing the extraction.
     """
     base_url = base_url.rstrip("/")
     client = make_client(base_url, auth, client_cert=client_cert)
-    response = client.session.post(
-        f"{base_url}/rest/api/3/changelog/bulkfetch",
-        json={"issueIdsOrKeys": issue_ids},
-        auth=auth,
-    )
-    if response.status_code == 404 or "json" not in response.headers.get("Content-Type", ""):
-        return {}
-    response.raise_for_status()
-    data = response.json()
-    return {
-        entry["issueId"]: entry.get("changeHistories", [])
-        for entry in data.get("issueChangeLogs", [])
-    }
+    result: dict[str, list[dict[str, Any]]] = {}
+    for start in range(0, len(issue_ids), BULKFETCH_MAX_ISSUES):
+        chunk = issue_ids[start : start + BULKFETCH_MAX_ISSUES]
+        try:
+            chunk_histories = _fetch_bulk_chunk(client.session, base_url, auth, chunk)
+        except _BulkfetchUnavailable:
+            # Not deployed on this instance: every later chunk would get the
+            # same answer, so stop asking.
+            break
+        result.update(chunk_histories)
+    return result
+
+
+class _BulkfetchUnavailable(Exception):
+    """The bulkfetch endpoint does not exist on this instance."""
+
+
+# Rejected dlt's JSONResponseCursorPaginator here (used for /search/jql): it
+# cannot tell Server/DC's HTML-with-200 "unavailable" answer from a real page,
+# and a rejected chunk must fall through, not raise.
+def _fetch_bulk_chunk(
+    session: requests.Session, base_url: str, auth: AuthConfigBase, chunk: list[str]
+) -> dict[str, list[dict[str, Any]]]:
+    histories: dict[str, list[dict[str, Any]]] = {}
+    body: dict[str, Any] = {"issueIdsOrKeys": chunk}
+    while True:
+        response = session.post(f"{base_url}/rest/api/3/changelog/bulkfetch", json=body, auth=auth)
+        if response.status_code == 404 or "json" not in response.headers.get("Content-Type", ""):
+            raise _BulkfetchUnavailable
+        if 400 <= response.status_code < 500 and response.status_code not in (401, 403):
+            logger.warning(
+                "bulkfetch_chunk_rejected", status=response.status_code, issues=len(chunk)
+            )
+            return {}
+        response.raise_for_status()
+        data = response.json()
+        for entry in data.get("issueChangeLogs", []):
+            histories.setdefault(entry["issueId"], []).extend(entry.get("changeHistories", []))
+        token = data.get("nextPageToken")
+        if not token:
+            return histories
+        body = {"issueIdsOrKeys": chunk, "nextPageToken": token}
 
 
 def fetch_per_issue(
@@ -101,6 +149,7 @@ def fetch(
     is_cloud: bool,
     issues: Iterable[dict[str, Any]],
     *,
+    batch_size: int = FETCH_BATCH_SIZE,
     client_cert: ClientCert | None = None,
 ) -> Iterator[ChangelogBatch]:
     """3-tier changelog strategy: expand (free, riding the search response) ->
@@ -111,28 +160,48 @@ def fetch(
     A tier's result is taken whole, never stitched with another tier's partial
     page — mixing partial slices from two tiers risks silent duplicate items.
 
-    Tier-1 results are yielded as they're seen (not collected into a dict
-    first) so a --limit-bounded caller stops pulling search pages as soon as
-    enough rows have been produced, rather than walking the whole project
-    before truncating (every command honours --limit).
+    Issues are resolved `batch_size` at a time (one search page) and yielded
+    in the order they arrived, which is the incremental cursor's order. A
+    --limit-bounded caller can then only stop at an issue boundary in cursor
+    order. Deferring tiers 2 and 3 to the end of the whole walk let the limit
+    stop first: later, tier-1-complete issues advanced the watermark past
+    the deferred ones, which were never fetched again (architecture review
+    finding 6). Buffering one page still stops the walk within a page of the
+    limit (every command honours --limit).
     """
+    for batch in itertools.batched(issues, batch_size):
+        yield from _fetch_batch(base_url, auth, is_cloud, batch, client_cert)
+
+
+def _fetch_batch(
+    base_url: str,
+    auth: AuthConfigBase,
+    is_cloud: bool,
+    batch: tuple[dict[str, Any], ...],
+    client_cert: ClientCert | None,
+) -> Iterator[ChangelogBatch]:
+    resolved: dict[str, ChangelogBatch] = {}
     pending: list[str] = []
-    for issue in issues:
+    for issue in batch:
         histories, complete = from_expand(issue)
         if complete:
-            yield issue["id"], "expand", True, histories
+            resolved[issue["id"]] = (issue["id"], "expand", True, histories)
         else:
             pending.append(issue["id"])
 
     if is_cloud and pending:
         bulk = fetch_bulk(base_url, auth, pending, client_cert=client_cert)
+        for issue_id in pending:
+            if issue_id in bulk:
+                resolved[issue_id] = (issue_id, "bulkfetch", True, bulk[issue_id])
         pending = [issue_id for issue_id in pending if issue_id not in bulk]
-        for issue_id, histories in bulk.items():
-            yield issue_id, "bulkfetch", True, histories
 
     for issue_id in pending:
         per_issue_histories = fetch_per_issue(base_url, auth, issue_id, client_cert=client_cert)
         if per_issue_histories is None:
-            yield issue_id, "per_issue", False, []
+            resolved[issue_id] = (issue_id, "per_issue", False, [])
         else:
-            yield issue_id, "per_issue", True, per_issue_histories
+            resolved[issue_id] = (issue_id, "per_issue", True, per_issue_histories)
+
+    for issue in batch:
+        yield resolved[issue["id"]]

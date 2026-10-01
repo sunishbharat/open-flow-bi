@@ -42,20 +42,29 @@ def postgres_dsn() -> Iterator[str]:
                     "changelog_complete boolean)"
                 )
             )
+            conn.execute(
+                sa.text(
+                    "CREATE TABLE jira_raw.issue_changelog_status ("
+                    "instance_id text, issue_id bigint, changelog_complete boolean)"
+                )
+            )
         engine.dispose()
         yield dsn
+
+
+_TABLES = "jira_raw.issues, jira_raw.issue_changelog, jira_raw.issue_changelog_status"
 
 
 @pytest.fixture
 def clean_tables(postgres_dsn: str) -> Iterator[None]:
     engine = sa.create_engine(postgres_dsn)
     with engine.begin() as conn:
-        conn.execute(sa.text("TRUNCATE jira_raw.issues, jira_raw.issue_changelog"))
+        conn.execute(sa.text(f"TRUNCATE {_TABLES}"))
     engine.dispose()
     yield
     engine = sa.create_engine(postgres_dsn)
     with engine.begin() as conn:
-        conn.execute(sa.text("TRUNCATE jira_raw.issues, jira_raw.issue_changelog"))
+        conn.execute(sa.text(f"TRUNCATE {_TABLES}"))
     engine.dispose()
 
 
@@ -129,17 +138,16 @@ def test_no_orphan_changelog_flags_a_changelog_row_with_no_matching_issue(
 
 
 def test_alerting_checks_never_fail_the_gate(postgres_dsn: str, clean_tables: None) -> None:
-    # changelog_complete lives on issue_changelog rows (flatten.changelog()),
-    # never on issues — see sql_checks.py's ALERTING comment for how this was
-    # confirmed against a live run.
-    _insert_issues(postgres_dsn, [("inst-a", 1)])
+    # Completeness is per issue, in issue_changelog_status: an incomplete
+    # issue usually has no item rows at all (architecture review finding 4).
+    _insert_issues(postgres_dsn, [("inst-a", 1), ("inst-a", 2)])
     engine = sa.create_engine(postgres_dsn)
     with engine.begin() as conn:
         conn.execute(
             sa.text(
-                "INSERT INTO jira_raw.issue_changelog "
-                "(instance_id, issue_id, history_id, item_index, changelog_complete) "
-                "VALUES ('inst-a', 1, 'h1', 0, false)"
+                "INSERT INTO jira_raw.issue_changelog_status "
+                "(instance_id, issue_id, changelog_complete) "
+                "VALUES ('inst-a', 1, false), ('inst-a', 2, true)"
             )
         )
     engine.dispose()

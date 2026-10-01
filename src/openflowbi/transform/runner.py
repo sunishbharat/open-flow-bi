@@ -28,9 +28,10 @@ from openflowbi.fields.selection import (
     SelectionRow,
     current_selection,
     validate_field_id,
-    validate_identifier,
+    validate_promoted_name,
 )
 from openflowbi.ops.tables import issue_dirty, rebuild_request
+from openflowbi.pipeline.locks import transform_lock
 
 logger = structlog.get_logger(__name__)
 
@@ -42,6 +43,15 @@ _SQL_DIR = Path(__file__).parent / "sql"
 # see _extract_expr's COALESCE below for why one expression covers all of
 # those without per-type special-casing.
 _SQL_TYPE_BY_SCHEMA_TYPE = {"number": "NUMERIC", "date": "DATE", "datetime": "TIMESTAMPTZ"}
+_CAST_TYPE_BY_SCHEMA_TYPE = {"number": "numeric", "date": "date", "datetime": "timestamptz"}
+
+# How information_schema.columns.data_type spells each column type above.
+_DATA_TYPE_BY_SQL_TYPE = {
+    "NUMERIC": "numeric",
+    "DATE": "date",
+    "TIMESTAMPTZ": "timestamp with time zone",
+    "TEXT": "text",
+}
 
 
 @functools.cache
@@ -81,41 +91,58 @@ def claim_dirty(conn: sa.Connection, instance_id: str) -> list[int]:
 def partition_incomplete(
     conn: sa.Connection, instance_id: str, issue_ids: list[int]
 ) -> tuple[list[int], list[int]]:
-    """Split `issue_ids` into (changelog-complete, incomplete). An issue with
-    zero changelog rows at all (never extracted yet) counts as complete here,
-    not incomplete - only an explicit changelog_complete=false row means a
-    mid-backfill partial history that would produce a wrong cycle time
-    (design doc §4). Incomplete issues are silently dropped from this pass;
-    they get re-marked dirty automatically the next time `extract changelog`
-    touches them (pipeline/dirty.py), so nothing is lost, only delayed.
+    """Split `issue_ids` into (changelog-complete, incomplete).
+
+    Complete means jira_raw.issue_changelog_status says the changelog was
+    extracted whole, for the issue's current version (extracted at or after
+    the issue's `updated_at`). Anything else is incomplete: no status row
+    (changelog never extracted), a partial extraction, or one older than the
+    issue. Building intervals from those would seed seq=0 with the current
+    status and produce a plausible, wrong time-in-status (design D4,
+    architecture review finding 4). Skipped issues keep their previous
+    intervals and are re-marked dirty the next time `extract changelog`
+    touches them, so nothing is lost, only delayed.
     """
     if not issue_ids:
         return [], []
+    status_table = conn.execute(
+        sa.text("SELECT to_regclass('jira_raw.issue_changelog_status')")
+    ).scalar_one()
+    if status_table is None:
+        logger.warning("changelog_status_missing", hint="run `flowbi extract changelog`")
+        return [], sorted(issue_ids)
     rows = conn.execute(
         sa.text(
-            "SELECT DISTINCT issue_id FROM jira_raw.issue_changelog "
-            "WHERE instance_id = :instance_id AND issue_id = ANY(:issue_ids) "
-            "AND changelog_complete = false"
+            "SELECT s.issue_id FROM jira_raw.issue_changelog_status s "
+            "LEFT JOIN jira_raw.issues i USING (instance_id, issue_id) "
+            "WHERE s.instance_id = :instance_id AND s.issue_id = ANY(:issue_ids) "
+            "AND s.changelog_complete "
+            "AND (i.updated_at IS NULL OR s.updated_at >= i.updated_at)"
         ),
         {"instance_id": instance_id, "issue_ids": issue_ids},
     ).fetchall()
-    incomplete = {row[0] for row in rows}
-    complete = [i for i in issue_ids if i not in incomplete]
-    return complete, sorted(incomplete)
+    complete = {row[0] for row in rows}
+    return (
+        [i for i in issue_ids if i in complete],
+        sorted(i for i in issue_ids if i not in complete),
+    )
 
 
 def _issue_ids_for_project(
-    conn: sa.Connection, instance_id: str, project: str, restrict_to: list[int] | None = None
+    conn: sa.Connection,
+    instance_id: str,
+    project: str | None,
+    restrict_to: list[int] | None = None,
 ) -> list[int]:
-    """Resolve a project key to a concrete issue_id list, optionally
-    narrowed to `restrict_to`. Covers both `--rebuild-all --project X`
-    (restrict_to=None) and the incremental dirty-set narrowed by --project
-    (restrict_to=the claimed, changelog-complete ids) with one query.
+    """Resolve a project key (None: every project) to a concrete issue_id
+    list, optionally narrowed to `restrict_to`. Covers `--rebuild-all` with
+    or without `--project` (restrict_to=None) and the incremental dirty-set
+    narrowed by --project (restrict_to=the claimed ids) with one query.
     """
     rows = conn.execute(
         sa.text(
             "SELECT issue_id FROM jira_raw.issues WHERE instance_id = :instance_id "
-            "AND fields -> 'project' ->> 'key' = :project "
+            "AND (CAST(:project AS text) IS NULL OR fields -> 'project' ->> 'key' = :project) "
             "AND (CAST(:restrict_to AS bigint[]) IS NULL OR issue_id = ANY(:restrict_to))"
         ),
         {"instance_id": instance_id, "project": project, "restrict_to": restrict_to},
@@ -150,13 +177,17 @@ def _extract_expr(field_id: str, schema_type: str) -> str:
     as the given schema_type. field_id/column_name are validated (caller) as
     safe identifiers before ever reaching an f-string - bind params can't
     parameterise a jsonb key any more than they can an identifier.
+
+    Typed fields cast only values Postgres accepts, anything else becomes
+    NULL. A hard cast let one malformed value abort the transaction that
+    claimed issue_dirty, so every later run hit the same row and analytics
+    stopped updating (architecture review finding 14). _count_invalid
+    reports what was dropped. pg_input_is_valid needs Postgres 16+.
     """
-    if schema_type == "number":
-        return f"(src.fields ->> '{field_id}')::numeric"
-    if schema_type == "date":
-        return f"(src.fields ->> '{field_id}')::date"
-    if schema_type == "datetime":
-        return f"(src.fields ->> '{field_id}')::timestamptz"
+    cast_type = _CAST_TYPE_BY_SCHEMA_TYPE.get(schema_type)
+    if cast_type is not None:
+        raw = f"src.fields ->> '{field_id}'"
+        return f"CASE WHEN pg_input_is_valid({raw}, '{cast_type}') THEN ({raw})::{cast_type} END"
     if schema_type == "string":
         return f"src.fields ->> '{field_id}'"
     # option/user/priority/status/issuetype/resolution/... - Jira's various
@@ -171,6 +202,43 @@ def _extract_expr(field_id: str, schema_type: str) -> str:
         f"src.fields -> '{field_id}' ->> 'displayName', "
         f"src.fields ->> '{field_id}')"
     )
+
+
+def _issue_column_types(conn: sa.Connection) -> dict[str, str]:
+    rows = conn.execute(
+        sa.text(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = 'analytics' AND table_name = 'issue'"
+        )
+    ).fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
+def _warn_invalid_values(
+    conn: sa.Connection, instance_id: str, issue_ids: list[int] | None, row: SelectionRow
+) -> None:
+    """Log how many values of a typed field _extract_expr turned into NULL."""
+    cast_type = _CAST_TYPE_BY_SCHEMA_TYPE.get(row.schema_type)
+    if cast_type is None:
+        return
+    raw = f"fields ->> '{row.field_id}'"
+    invalid = conn.execute(
+        sa.text(
+            f"SELECT count(*) FROM jira_raw.issues WHERE instance_id = :instance_id "
+            "AND (CAST(:issue_ids AS bigint[]) IS NULL OR issue_id = ANY(:issue_ids)) "
+            f"AND {raw} IS NOT NULL AND NOT pg_input_is_valid({raw}, '{cast_type}')"
+        ),
+        {"instance_id": instance_id, "issue_ids": issue_ids},
+    ).scalar_one()
+    if invalid:
+        logger.warning(
+            "promoted_values_not_castable",
+            field_id=row.field_id,
+            column=row.column_name,
+            type=cast_type,
+            count=invalid,
+            written_as="NULL",
+        )
 
 
 def rebuild_issue_columns(
@@ -194,23 +262,36 @@ def rebuild_issue_columns(
     column_fields = [row for row in live if row.target == "column"]
     bridge_fields = [row for row in live if row.target == "bridge_table"]
 
-    if column_fields:
-        set_clauses = []
-        for row in column_fields:
-            assert row.column_name and row.field_id  # save_selection() requires both
-            validate_identifier(row.column_name)
-            validate_field_id(row.field_id)
-            col_type = _SQL_TYPE_BY_SCHEMA_TYPE.get(row.schema_type, "TEXT")
-            conn.execute(
-                sa.text(
-                    f'ALTER TABLE analytics.issue ADD COLUMN IF NOT EXISTS "{row.column_name}" '
-                    f"{col_type}"
-                )
+    set_clauses = []
+    existing_types = _issue_column_types(conn) if column_fields else {}
+    for row in column_fields:
+        assert row.column_name and row.field_id  # save_selection() requires both
+        validate_promoted_name(row.column_name, row.target)
+        validate_field_id(row.field_id)
+        col_type = _SQL_TYPE_BY_SCHEMA_TYPE.get(row.schema_type, "TEXT")
+        existing = existing_types.get(row.column_name)
+        if existing is not None and existing != _DATA_TYPE_BY_SQL_TYPE[col_type]:
+            # The field was re-promoted with another type under the same
+            # column name. Writing it would fail the whole transaction on
+            # every run (finding 14), so leave the column as it is.
+            logger.warning(
+                "promoted_column_type_mismatch",
+                column=row.column_name,
+                column_type=existing,
+                field_type=col_type,
+                hint="demote the field, or promote it under a new column name",
             )
-            set_clauses.append(
-                f'"{row.column_name}" = {_extract_expr(row.field_id, row.schema_type)}'
+            continue
+        conn.execute(
+            sa.text(
+                f'ALTER TABLE analytics.issue ADD COLUMN IF NOT EXISTS "{row.column_name}" '
+                f"{col_type}"
             )
+        )
+        set_clauses.append(f'"{row.column_name}" = {_extract_expr(row.field_id, row.schema_type)}')
+        _warn_invalid_values(conn, instance_id, issue_ids, row)
 
+    if set_clauses:
         conn.execute(
             sa.text(
                 f"UPDATE analytics.issue a SET {', '.join(set_clauses)}, rebuilt_at = now() "
@@ -225,9 +306,10 @@ def rebuild_issue_columns(
     bridge_rows = 0
     for row in bridge_fields:
         assert row.column_name and row.field_id
-        validate_identifier(row.column_name)
+        validate_promoted_name(row.column_name, row.target)
         validate_field_id(row.field_id)
-        table = f"analytics.{row.column_name}"
+        # Quoted: a valid identifier can still be a reserved word ("order").
+        table = f'analytics."{row.column_name}"'
         conn.execute(
             sa.text(
                 f"CREATE TABLE IF NOT EXISTS {table} ("
@@ -277,30 +359,50 @@ def run_transform(
 ) -> TransformResult:
     """The top-level entry point behind `flowbi transform`. Always drains
     flowbi_ops.rebuild_request afterwards, incremental pass or not.
+
+    Holds the transform lock throughout, so overlapping runs take turns
+    (architecture review finding 15).
     """
+    with transform_lock(dsn):
+        result = _transform(dsn, instance_id, rebuild_all=rebuild_all, project=project)
+        _drain_rebuild_queue(dsn, instance_id)
+    return result
+
+
+def _transform(
+    dsn: str, instance_id: str, *, rebuild_all: bool, project: str | None
+) -> TransformResult:
     _, selection = current_selection(dsn, instance_id)
 
     engine = sa.create_engine(dsn)
     try:
         with engine.begin() as conn:
             claimed_count = 0
-            skipped = 0
             if rebuild_all:
                 issue_ids = (
                     _issue_ids_for_project(conn, instance_id, project) if project else None
                 )
+                candidates = (
+                    issue_ids
+                    if issue_ids is not None
+                    else _issue_ids_for_project(conn, instance_id, None)
+                )
             else:
                 claimed = claim_dirty(conn, instance_id)
                 claimed_count = len(claimed)
-                complete, incomplete = partition_incomplete(conn, instance_id, claimed)
-                skipped = len(incomplete)
                 issue_ids = (
-                    _issue_ids_for_project(conn, instance_id, project, restrict_to=complete)
+                    _issue_ids_for_project(conn, instance_id, project, restrict_to=claimed)
                     if project
-                    else complete
+                    else claimed
                 )
+                candidates = issue_ids
 
-            interval_rows = rebuild_intervals(conn, instance_id, issue_ids)
+            # Only intervals depend on the changelog. analytics.issue's
+            # columns come from jira_raw.issues alone, so they are rebuilt
+            # for every issue in scope, complete changelog or not.
+            complete, incomplete = partition_incomplete(conn, instance_id, candidates)
+            skipped = len(incomplete)
+            interval_rows = rebuild_intervals(conn, instance_id, complete)
             issue_rows, bridge_rows = rebuild_issue_columns(conn, instance_id, issue_ids, selection)
 
         result = TransformResult(
@@ -312,8 +414,6 @@ def run_transform(
         )
     finally:
         engine.dispose()
-
-    drain_rebuild_queue(dsn, instance_id)
     return result
 
 
@@ -323,9 +423,28 @@ def drain_rebuild_queue(dsn: str, instance_id: str) -> list[RebuildOutcome]:
     doesn't change anything about status history). Each request runs in its
     own transaction so one failure can't block the rest of the queue.
     """
+    with transform_lock(dsn):
+        return _drain_rebuild_queue(dsn, instance_id)
+
+
+def _drain_rebuild_queue(dsn: str, instance_id: str) -> list[RebuildOutcome]:
+    """Caller holds the transform lock. That makes the stale-`running` sweep
+    safe: no other drain can be running, so a `running` row is one a crashed
+    run left behind, and would otherwise stay stuck forever (finding 15).
+    """
     engine = sa.create_engine(dsn)
     try:
         with engine.begin() as conn:
+            requeued = conn.execute(
+                sa.update(rebuild_request)
+                .where(
+                    rebuild_request.c.instance_id == instance_id,
+                    rebuild_request.c.status == "running",
+                )
+                .values(status="queued", started_at=None)
+            ).rowcount
+            if requeued:
+                logger.warning("rebuild_request_requeued_after_crash", count=requeued)
             queued = conn.execute(
                 sa.select(rebuild_request)
                 .where(

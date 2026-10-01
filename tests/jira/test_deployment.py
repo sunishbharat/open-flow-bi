@@ -1,3 +1,4 @@
+import pendulum
 import pytest
 import requests
 
@@ -105,6 +106,12 @@ def test_jql_updated_floor_converts_across_offsets():
     # not the offset the cursor value happened to carry.
     floor = deployment.jql_updated_floor("2024-01-15T09:30:00.000+0000", "America/New_York")
     assert floor == "2024-01-15 04:30"
+
+
+def test_jql_updated_floor_accepts_the_datetime_cursor():
+    # The incremental cursor is an aware datetime (architecture review finding 1).
+    cursor = pendulum.datetime(2024, 1, 15, 9, 30, 45)
+    assert deployment.jql_updated_floor(cursor, "America/New_York") == "2024-01-15 04:30"
 
 
 def test_jql_updated_floor_rejects_a_non_datetime_value():

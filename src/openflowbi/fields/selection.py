@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 import sqlalchemy as sa
 import yaml
 
-from openflowbi.ops.tables import field_definition, field_selection
+from openflowbi.ops.tables import field_definition, field_selection, rebuild_request
 
 VALID_TARGETS = ("column", "bridge_table")
 
@@ -68,6 +68,33 @@ def validate_field_id(field_id: str) -> None:
             f"field id {field_id!r} is not a valid identifier - use letters, digits and "
             "underscores, starting with a letter"
         )
+
+
+# Names a promoted field can never take (architecture review finding 13).
+# The runner's DDL is idempotent (ADD COLUMN / CREATE TABLE IF NOT EXISTS), so
+# reusing an existing name is silently a no-op, and what follows writes into
+# the wrong thing: a column target named after one of analytics.issue's own
+# columns has the promoted UPDATE overwrite it (issue_id is the primary key),
+# and a bridge target named after a fixed analytics table has the bridge
+# DELETE/INSERT run against that table. Postgres system columns can't be
+# added at all.
+RESERVED_COLUMN_NAMES = frozenset(
+    {"instance_id", "issue_id", "issue_key", "created_at", "updated_at", "rebuilt_at"}
+    | {"tableoid", "xmin", "cmin", "xmax", "cmax", "ctid"}
+)
+RESERVED_TABLE_NAMES = frozenset({"issue", "issue_status_interval"})
+
+
+def validate_promoted_name(name: str, target: str) -> None:
+    """Raise ValueError unless `name` is a safe, unreserved name for a
+    promoted field's column (target 'column') or bridge table ('bridge_table').
+    Checked at save time, and again by the runner before any DDL.
+    """
+    validate_identifier(name)
+    reserved = RESERVED_TABLE_NAMES if target == "bridge_table" else RESERVED_COLUMN_NAMES
+    if name in reserved:
+        what = "analytics table" if target == "bridge_table" else "analytics.issue column"
+        raise ValueError(f"{name!r} is an existing {what} - choose another name with --column")
 
 
 @dataclass(frozen=True)
@@ -181,19 +208,21 @@ def current_selection(
 def _check_no_column_name_collisions(working: dict[tuple[str, str], SelectionRow]) -> None:
     """§14 open question #4: two fields both wanting the same column - reject
     at save time with a clear message, rather than discovering it at rebuild.
-    Only live (not deprecated), column-target rows can collide.
+    Only live (not deprecated) rows can collide: two column targets on one
+    column, or two bridge targets on one table.
     """
-    claimed: dict[str, tuple[str, str]] = {}
+    claimed: dict[tuple[str, str], tuple[str, str]] = {}
     for key, row in working.items():
-        if row.target != "column" or row.deprecated_at is not None or not row.column_name:
+        if row.deprecated_at is not None or not row.column_name:
             continue
-        other = claimed.get(row.column_name)
+        name = (row.target, row.column_name)
+        other = claimed.get(name)
         if other is not None and other != key:
             raise ValueError(
                 f"column name {row.column_name!r} is claimed by both "
                 f"{other[0]!r} and {key[0]!r} - rename one with --column"
             )
-        claimed[row.column_name] = key
+        claimed[name] = key
 
 
 def save_selection(
@@ -202,6 +231,12 @@ def save_selection(
     """Write a new version: the prior version's rows, with `changes` applied.
     Never updates a row in place (§2.1: append-only). Returns the new version
     number, starting at 1.
+
+    A save that promotes anything also queues a full rebuild of that version
+    (flowbi_ops.rebuild_request), in the same transaction. Without it, the
+    next incremental `flowbi transform` added the column but filled it only
+    for dirty issues, and every other row stayed NULL until someone ran
+    `fields request-rebuild` (architecture review finding 11).
     """
     if not changes:
         raise ValueError("no changes to save")
@@ -210,6 +245,8 @@ def save_selection(
             raise ValueError(f"target must be one of {VALID_TARGETS}, got {change.target!r}")
         if change.column_name is not None:
             validate_identifier(change.column_name)
+            if change.promote:
+                validate_promoted_name(change.column_name, change.target)
         if change.promote and change.target == "bridge_table" and change.schema_type != "array":
             raise ValueError(
                 f"target 'bridge_table' is for array fields, got schema_type {change.schema_type!r}"
@@ -304,6 +341,15 @@ def save_selection(
                     ]
                 )
             )
+            if any(change.promote for change in changes):
+                conn.execute(
+                    sa.insert(rebuild_request).values(
+                        instance_id=instance_id,
+                        version=new_version,
+                        scope=None,
+                        requested_by=actor,
+                    )
+                )
         return new_version
     finally:
         engine.dispose()

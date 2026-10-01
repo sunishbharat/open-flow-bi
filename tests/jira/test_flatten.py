@@ -1,3 +1,5 @@
+import pendulum
+
 from openflowbi.jira import flatten
 from openflowbi.jira.fields import Field
 
@@ -51,7 +53,7 @@ def test_issues_flattens_normal_case():
             "issue_id": 10001,
             "issue_key": "PROJ-1",
             "created_at": "2024-01-01T00:00:00.000+0000",
-            "updated_at": "2024-01-02T00:00:00.000+0000",
+            "updated_at": pendulum.datetime(2024, 1, 2),
             "fields": raw[0]["fields"],
         }
     ]
@@ -174,7 +176,7 @@ def test_changelog_stamps_updated_at_from_issue_updated_map():
             issue_updated={"42": "2024-02-01T00:00:00.000+0000"},
         )
     )
-    assert rows[0]["updated_at"] == "2024-02-01T00:00:00.000+0000"
+    assert rows[0]["updated_at"] == pendulum.datetime(2024, 2, 1)
     assert rows[0]["created_at"] == "2024-01-01T00:00:00.000+0000"
 
 
@@ -182,3 +184,35 @@ def test_changelog_updated_at_defaults_to_none_when_map_omitted():
     history = {"id": "h1", "created": "2024-01-01T00:00:00.000+0000", "items": [{"field": "x"}]}
     rows = list(flatten.changelog([("1", "expand", True, [history])], INSTANCE_ID))
     assert rows[0]["updated_at"] is None
+
+
+def test_updated_at_is_an_instant_so_the_cursor_orders_across_offsets():
+    # Architecture review finding 1: dlt's incremental takes max() over
+    # updated_at. As raw strings, 02:10+0100 (01:10Z) sorts below 02:30+0200
+    # (00:30Z) although it is 40 minutes later: the DST fall-back case.
+    raw = [
+        {"id": "1", "fields": {"updated": "2024-10-27T02:30:00.000+0200"}},
+        {"id": "2", "fields": {"updated": "2024-10-27T02:10:00.000+0100"}},
+    ]
+    earlier, later = (row["updated_at"] for row in flatten.issues(raw, INSTANCE_ID))
+    assert max(earlier, later) is later
+    assert later == pendulum.datetime(2024, 10, 27, 1, 10)
+
+
+def test_changelog_status_records_an_issue_with_no_item_rows():
+    # Architecture review finding 4: flatten.changelog() yields nothing for
+    # these, so without a status row "per-issue tier unavailable" and "never
+    # transitioned" were indistinguishable from "not extracted at all".
+    updated = {"7": "2024-02-01T00:00:00.000+0000"}
+    incomplete = flatten.changelog_status(("7", "per_issue", False, []), INSTANCE_ID, updated)
+    assert incomplete == {
+        "instance_id": INSTANCE_ID,
+        "issue_id": 7,
+        "source": "per_issue",
+        "changelog_complete": False,
+        "history_count": 0,
+        "updated_at": pendulum.datetime(2024, 2, 1),
+    }
+    never_moved = flatten.changelog_status(("7", "expand", True, []), INSTANCE_ID, updated)
+    assert never_moved["changelog_complete"] is True
+    assert never_moved["history_count"] == 0

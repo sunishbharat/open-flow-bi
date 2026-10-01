@@ -1,4 +1,5 @@
 import re
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +9,7 @@ import structlog
 from openflowbi.jira.deployment import DeploymentProfile
 from openflowbi.pipeline import dirty
 from openflowbi.pipeline.locks import load_lock
-from openflowbi.pipeline.source import DEFAULT_INCREMENTAL_START, jira_source
+from openflowbi.pipeline.source import DEFAULT_INCREMENTAL_START, jira_source, parse_cursor
 
 logger = structlog.get_logger(__name__)
 
@@ -27,6 +28,30 @@ def pipeline_name(instance_id: str, project: str | None) -> str:
     one physical Postgres staging table. Noted as a gap in M7.1, fixed here.
     """
     return f"openflowbi_{_slug(instance_id)}_{_slug(project or 'all')}"
+
+
+_CURSOR_STATE_KEYS = ("initial_value", "start_value", "last_value")
+
+
+def _migrate_string_cursors(pipeline: Any) -> None:
+    """Convert `updated_at` cursors stored as strings into aware datetimes.
+
+    Before architecture review finding 1, the cursor was Jira's raw
+    `updated` string. dlt cannot compare a stored string with the datetime
+    rows it gets now (TypeError at extract), so every pipeline that ran
+    before the fix needs its state converted once. The caller syncs
+    destination state first, so a fresh container (no local `.dlt`) is
+    migrated too.
+    """
+    with pipeline.managed_state() as state:
+        resources = state.get("sources", {}).get("jira", {}).get("resources", {})
+        for resource_state in resources.values():
+            cursor = resource_state.get("incremental", {}).get("updated_at")
+            if not cursor:
+                continue
+            for key in _CURSOR_STATE_KEYS:
+                if isinstance(cursor.get(key), str):
+                    cursor[key] = parse_cursor(cursor[key])
 
 
 def run(
@@ -78,57 +103,101 @@ def run(
         dataset_name="jira_raw",
         **pipeline_kwargs,
     )
+    # What pipeline.run() does before touching data, done once here because
+    # run() is split into its steps below: restore state from the
+    # destination (a fresh container has no local `.dlt`), then convert any
+    # pre-finding-1 string cursors in it.
+    pipeline.sync_destination()
+    _migrate_string_cursors(pipeline)
     source = jira_source(
-        profile, project=project, incremental_start=incremental_start
+        profile,
+        project=project,
+        incremental_start=incremental_start,
+        changelog_issue_limit=limit,
     ).with_resources(*resources)
     if limit is not None:
         # Project rule: a debug run must never walk a whole project by
         # accident, even when writing to a real destination, not just --sink table.
+        # issue_changelog applies its own limit, counted in issues (see jira_source).
         for name in resources:
-            source.resources[name].add_limit(limit)
-
-    def _load() -> Any:
-        return pipeline.run(
-            source,
-            loader_file_format=loader_file_format,
-            # P2-D4 (docs/phase2-postgres-design.md §2/§4.2): new tables/columns
-            # (e.g. a new custom field) must not break a load, but a column
-            # silently changing type should — that is exactly the class of bug
-            # M7.2's issue_id string->bigint change needs to be protected against
-            # from here on.
-            schema_contract={"tables": "evolve", "columns": "evolve", "data_type": "freeze"},
-        )
+            if name != "issue_changelog":
+                source.resources[name].add_limit(limit)
 
     if destination == "postgres":
         assert postgres_dsn  # validated above
+        dsn = postgres_dsn
+
         # M7.4 (§6b): belt-and-braces around the per-project staging dataset
         # above, while dlt's own merge_scope_by_load_id fix is still
-        # opt-in/unreleased — serializes only the load step across every
-        # process sharing this DSN, not extraction.
-        with load_lock(postgres_dsn):
-            info = _load()
-        _mark_dirty(info, postgres_dsn, profile.instance_id, resources)
-        return info
-    return _load()
+        # opt-in/unreleased. Held around pipeline.load() only, never extract
+        # or normalize (architecture review finding 7): extraction is the
+        # slow, quota-bound part and stays parallel across projects, and the
+        # lock's connection is never left idle for the length of a backfill.
+        def lock() -> AbstractContextManager[None]:
+            return load_lock(dsn)
+
+        def after_load(info: Any) -> None:
+            # Every dirty-marking table, not just `resources`: load() also
+            # loads any package a killed run left behind, which may hold the
+            # other resource. mark_dirty finds nothing where a load wrote nothing.
+            _mark_dirty(info, dsn, profile.instance_id, tuple(dirty.DIRTY_REASONS))
+    else:
+        lock = nullcontext
+
+        def after_load(info: Any) -> None:
+            pass
+
+    pipeline.extract(
+        source,
+        loader_file_format=loader_file_format,
+        # P2-D4 (docs/phase2-postgres-design.md §2/§4.2): new tables/columns
+        # (e.g. a new custom field) must not break a load, but a column
+        # silently changing type should — that is exactly the class of bug
+        # M7.2's issue_id string->bigint change needs to be protected against
+        # from here on.
+        schema_contract={"tables": "evolve", "columns": "evolve", "data_type": "freeze"},
+    )
+    # normalize() and load() also pick up packages a killed run left
+    # behind, as pipeline.run() would.
+    pipeline.normalize()
+    with lock():
+        info = pipeline.load()
+    after_load(info)
+    return info
+
+
+class DirtyMarkError(RuntimeError):
+    """The load committed, but its issues could not be queued for `transform`."""
 
 
 def _mark_dirty(
     info: Any, postgres_dsn: str, instance_id: str, resources: tuple[str, ...]
 ) -> None:
-    """M7.5 (docs/phase2-postgres-design.md §8): best-effort issue_dirty upkeep.
+    """M7.5 (docs/phase2-postgres-design.md §8): queue the loaded issues in
+    flowbi_ops.issue_dirty for the next incremental `flowbi transform`.
 
-    Non-critical by design — nothing consumes issue_dirty until Phase 3, and
-    `flowbi_ops` may not be migrated yet (`alembic upgrade head`) on a
-    checkout that only ever ran `extract issues`/`extract changelog` against
-    filesystem or a fresh Postgres. A failure here must not fail the
-    extraction that already succeeded, the same graceful-degradation pattern
-    pipeline/source.py uses for an unavailable account timezone.
+    Not best-effort any more (architecture review finding 8): incremental
+    transform is driven entirely by issue_dirty, so a silently failed mark
+    means those issues are never rebuilt. A failure fails the command. The
+    load has already committed and the watermark moved past these issues,
+    so re-running the extract won't re-mark them; the error says how to
+    recover. Only a database where `flowbi_ops` isn't migrated yet (nothing
+    can consume issue_dirty there) degrades to a warning.
     """
+    if not dirty.ops_ready(postgres_dsn):
+        logger.warning("issue_dirty_unavailable", hint="run `alembic upgrade head`")
+        return
     for name in resources:
         reason = dirty.DIRTY_REASONS.get(name)
         if reason is None:
             continue
         try:
-            dirty.mark_dirty(postgres_dsn, instance_id, name, list(info.loads_ids), reason)
-        except Exception:  # noqa: BLE001 - see docstring
-            logger.warning("issue_dirty_mark_failed", table=name, exc_info=True)
+            dirty.mark_dirty(
+                postgres_dsn, instance_id, dirty.DIRTY_TABLES[name], list(info.loads_ids), reason
+            )
+        except Exception as exc:
+            raise DirtyMarkError(
+                f"Load {', '.join(info.loads_ids)} committed, but marking its {name} issues "
+                "dirty failed, so an incremental `flowbi transform` would never rebuild them. "
+                "Fix the cause below, then run `flowbi transform --rebuild-all`."
+            ) from exc

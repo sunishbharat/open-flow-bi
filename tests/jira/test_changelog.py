@@ -1,6 +1,8 @@
-from unittest.mock import patch
+import json
+from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from openflowbi.jira import changelog
 
@@ -63,6 +65,84 @@ def test_fetch_bulk_cloud():
     assert result["10001"][0]["id"] == "9001"
 
 
+@pytest.mark.vcr
+def test_fetch_bulk_follows_next_page_token_cloud():
+    # Architecture review finding 5: bulkfetch pages its histories. An issue
+    # split across two pages must come back with both halves, in order.
+    result = changelog.fetch_bulk("https://example.atlassian.net", None, ["10001", "10002"])
+    assert [h["id"] for h in result["10001"]] == ["9001", "9002"]
+    assert [h["id"] for h in result["10002"]] == ["9003"]
+
+
+def _response(status: int, body: dict | None = None) -> requests.Response:
+    response = requests.Response()
+    response.status_code = status
+    response.headers["Content-Type"] = "application/json"
+    response._content = json.dumps(body or {}).encode()
+    return response
+
+
+def _patched_session(post):
+    client = MagicMock()
+    client.session.post.side_effect = post
+    return patch.object(changelog, "make_client", return_value=client), client
+
+
+def test_fetch_bulk_sends_ids_in_chunks():
+    ids = [str(i) for i in range(changelog.BULKFETCH_MAX_ISSUES + 1)]
+
+    def post(url, json, auth):
+        logs = [{"issueId": i, "changeHistories": []} for i in json["issueIdsOrKeys"]]
+        return _response(200, {"issueChangeLogs": logs})
+
+    patcher, client = _patched_session(post)
+    with patcher:
+        result = changelog.fetch_bulk(APACHE_JIRA, None, ids)
+
+    sent = [call.kwargs["json"]["issueIdsOrKeys"] for call in client.session.post.call_args_list]
+    assert [len(chunk) for chunk in sent] == [changelog.BULKFETCH_MAX_ISSUES, 1]
+    assert set(result) == set(ids)
+
+
+def test_fetch_bulk_rejected_chunk_falls_through_instead_of_raising():
+    # A 400 (e.g. too many ids) must leave that chunk's issues to the
+    # per-issue tier, not crash the whole extraction.
+    def post(url, json, auth):
+        if "bad" in json["issueIdsOrKeys"]:
+            return _response(400, {"errorMessages": ["nope"]})
+        return _response(200, {"issueChangeLogs": [{"issueId": "ok", "changeHistories": []}]})
+
+    patcher, _ = _patched_session(post)
+    with patcher, patch.object(changelog, "BULKFETCH_MAX_ISSUES", 1):
+        result = changelog.fetch_bulk(APACHE_JIRA, None, ["bad", "ok"])
+    assert result == {"ok": []}
+
+
+def test_fetch_bulk_drops_a_chunk_whose_later_page_is_rejected():
+    # Never return half an issue's history as if it were all of it.
+    pages = iter(
+        [
+            _response(
+                200,
+                {
+                    "issueChangeLogs": [{"issueId": "1", "changeHistories": [{"id": "h1"}]}],
+                    "nextPageToken": "p2",
+                },
+            ),
+            _response(400),
+        ]
+    )
+    patcher, _ = _patched_session(lambda url, json, auth: next(pages))
+    with patcher:
+        assert changelog.fetch_bulk(APACHE_JIRA, None, ["1"]) == {}
+
+
+def test_fetch_bulk_auth_failure_raises():
+    patcher, _ = _patched_session(lambda url, json, auth: _response(401))
+    with patcher, pytest.raises(requests.HTTPError):
+        changelog.fetch_bulk(APACHE_JIRA, None, ["1"])
+
+
 def test_fetch_orchestration_prefers_expand_when_complete():
     issues = [{"id": "1", "changelog": {"total": 1, "histories": [{"id": "h1"}]}}]
     batches = list(changelog.fetch(APACHE_JIRA, None, is_cloud=False, issues=issues))
@@ -99,6 +179,31 @@ def test_fetch_orchestration_cloud_tries_bulk_before_per_issue():
     mock_per_issue.assert_called_once_with(APACHE_JIRA, None, "2", client_cert=None)
     assert ("1", "bulkfetch", True, [{"id": "hbulk"}]) in batches
     assert ("2", "per_issue", True, [{"id": "hfallback"}]) in batches
+
+
+def test_fetch_yields_in_search_order_with_fallback_tiers_resolved_per_page():
+    # Architecture review finding 6: the fallback tiers used to run only after the whole walk,
+    # so a limit could stop the walk after later, tier-1-complete issues had advanced the
+    # watermark, and the deferred, earlier-updated issue was never fetched.
+    pulled: list[str] = []
+
+    def search():
+        for issue_id, total in (("1", 5), ("2", 0), ("3", 0), ("4", 5)):
+            pulled.append(issue_id)
+            yield {"id": issue_id, "changelog": {"total": total, "histories": []}}
+
+    with patch.object(changelog, "fetch_per_issue", return_value=[{"id": "h"}]):
+        batches = changelog.fetch(APACHE_JIRA, None, is_cloud=False, issues=search(), batch_size=2)
+        first = next(batches)
+        assert pulled == ["1", "2"]  # one page read, not the whole walk
+        rest = list(batches)
+
+    assert [(b[0], b[1]) for b in [first, *rest]] == [
+        ("1", "per_issue"),
+        ("2", "expand"),
+        ("3", "expand"),
+        ("4", "per_issue"),
+    ]
 
 
 def test_fetch_orchestration_per_issue_unavailable_marks_incomplete():

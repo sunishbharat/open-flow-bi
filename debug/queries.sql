@@ -15,22 +15,14 @@ FROM 'out/jira_raw/issue_changelog/*.parquet'
 GROUP BY issue_id, history_id, item_index
 HAVING count(*) > 1;
 
--- Issues with an incomplete changelog: no changelog_complete=False row exists
--- for an issue whose per-issue tier was entirely unavailable (empty
--- histories), so diff against the issues table instead of filtering the
--- changelog table alone.
-SELECT i.issue_id, i.issue_key
+-- Issues whose changelog the transform won't trust: never extracted (no
+-- status row) or extracted incomplete. One status row per extracted issue
+-- (flatten.changelog_status); the item rows can't say this, since an issue
+-- with no histories has none.
+SELECT i.issue_id, i.issue_key, s.source, s.changelog_complete
 FROM 'out/jira_raw/issues/*.parquet' i
-LEFT JOIN (
-    SELECT DISTINCT issue_id FROM 'out/jira_raw/issue_changelog/*.parquet'
-) c ON c.issue_id = i.issue_id
-WHERE c.issue_id IS NULL;
-
--- Explicit changelog_complete=False rows (per-issue tier fetched but the API
--- reported it as partial).
-SELECT DISTINCT issue_id
-FROM 'out/jira_raw/issue_changelog/*.parquet'
-WHERE changelog_complete = false;
+LEFT JOIN 'out/jira_raw/issue_changelog_status/*.parquet' s ON s.issue_id = i.issue_id
+WHERE s.issue_id IS NULL OR NOT s.changelog_complete;
 
 -- Status transition matrix: from_value -> to_value counts for the "status" field.
 SELECT from_value, to_value, count(*) AS transitions

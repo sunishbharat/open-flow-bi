@@ -13,22 +13,44 @@ free with Alembic, no new dependency.
 """
 
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 
+import structlog
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
+
+logger = structlog.get_logger(__name__)
 
 # Arbitrary, stable — every process loading into this database must use the
 # same key, since pg_advisory_lock's exclusivity is keyed on it alone.
 LOCK_KEY = 8_314_159
 
+# Held by `flowbi transform` for its whole run, incremental pass and
+# rebuild-queue drain alike (architecture review finding 15).
+TRANSFORM_LOCK_KEY = 8_314_160
+
+
+def load_lock(dsn: str) -> AbstractContextManager[None]:
+    """Blocks (does not fail) if another process is loading — the load step
+    is fast, so serializing it is cheap compared to the silent
+    duplication/loss risk it guards against.
+    """
+    return advisory_lock(dsn, LOCK_KEY)
+
+
+def transform_lock(dsn: str) -> AbstractContextManager[None]:
+    """Serializes transforms on this database. Two overlapping runs (a
+    scheduled one and a manual --rebuild-all) would otherwise race on
+    issue_status_interval's primary key and on the rebuild queue. Blocks
+    rather than fails: the second run then finds less to do.
+    """
+    return advisory_lock(dsn, TRANSFORM_LOCK_KEY)
+
 
 @contextmanager
-def load_lock(dsn: str, key: int = LOCK_KEY) -> Iterator[None]:
-    """Hold a session-level Postgres advisory lock for the wrapped block.
-
-    Blocks (does not fail) if another process already holds `key` — the load
-    step is fast, so serializing it is cheap compared to the silent
-    duplication/loss risk it guards against.
+def advisory_lock(dsn: str, key: int) -> Iterator[None]:
+    """Hold a session-level Postgres advisory lock for the wrapped block,
+    blocking until any other holder of `key` releases it.
     """
     engine = create_engine(dsn)
     try:
@@ -37,6 +59,12 @@ def load_lock(dsn: str, key: int = LOCK_KEY) -> Iterator[None]:
             try:
                 yield
             finally:
-                conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": key})
+                try:
+                    conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": key})
+                except DBAPIError:
+                    # The connection dropped, which released a session lock
+                    # already. Raising here would fail a load that committed
+                    # (architecture review finding 7).
+                    logger.warning("advisory_unlock_failed", key=key, exc_info=True)
     finally:
         engine.dispose()

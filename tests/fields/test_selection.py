@@ -218,3 +218,62 @@ def test_import_yaml_with_no_fields_raises(postgres_dsn):
     empty_doc = "instance_id: x\nfields: []\n"
     with pytest.raises(ValueError, match="no fields"):
         selection.import_yaml(postgres_dsn, INSTANCE_ID, empty_doc, actor="test")
+
+
+
+def _rebuild_requests(dsn: str) -> list[tuple]:
+    engine = sa.create_engine(dsn)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT version, scope, status, requested_by FROM flowbi_ops.rebuild_request "
+                    "WHERE instance_id = :i ORDER BY request_id"
+                ),
+                {"i": INSTANCE_ID},
+            ).fetchall()
+        return [tuple(r) for r in rows]
+    finally:
+        engine.dispose()
+
+
+def test_promote_queues_a_full_rebuild_of_the_new_version(postgres_dsn):
+    # Architecture review finding 11: without this, the next incremental
+    # transform filled the new column only for dirty issues.
+    promote = selection.SelectionChange(
+        field_name="Story Points", schema_type="number", promote=True, column_name="points"
+    )
+    version = selection.save_selection(postgres_dsn, INSTANCE_ID, [promote], actor="alice")
+    assert _rebuild_requests(postgres_dsn) == [(version, None, "queued", "alice")]
+
+    # A demote changes no column, so it queues nothing.
+    demote = selection.SelectionChange(
+        field_name="Story Points", schema_type="number", promote=False
+    )
+    selection.save_selection(postgres_dsn, INSTANCE_ID, [demote], actor="alice")
+    assert len(_rebuild_requests(postgres_dsn)) == 1
+
+
+def test_import_queues_a_rebuild(postgres_dsn):
+    doc = {
+        "fields": [
+            {"name": "Story Points", "schema_type": "number", "column_name": "points"},
+        ]
+    }
+    version = selection.import_yaml(postgres_dsn, INSTANCE_ID, yaml.safe_dump(doc), actor="bob")
+    assert _rebuild_requests(postgres_dsn) == [(version, None, "queued", "bob")]
+
+
+def test_save_selection_rejects_two_bridge_fields_on_one_table(postgres_dsn):
+    def bridge(name: str) -> selection.SelectionChange:
+        return selection.SelectionChange(
+            field_name=name,
+            schema_type="array",
+            promote=True,
+            column_name="tags",
+            target="bridge_table",
+        )
+
+    selection.save_selection(postgres_dsn, INSTANCE_ID, [bridge("Labels")], actor="test")
+    with pytest.raises(ValueError, match="claimed by both"):
+        selection.save_selection(postgres_dsn, INSTANCE_ID, [bridge("Components")], actor="test")

@@ -63,10 +63,23 @@ configure_logging()
 # Project rule: every command that walks Jira data honours --limit — a
 # debug run must never walk a whole project by accident. Defined once, reused
 # by every extract subcommand so it can't be forgotten on a new one.
+# `--limit 0` walks everything (architecture review finding 9): a full run
+# still has to be asked for explicitly, so the rule holds, but a scheduled
+# task no longer has to guess a "large enough" number that silently caps it.
 LimitOption = Annotated[
     int,
-    typer.Option("--limit", help="Max rows to process - never walk a project by accident"),
+    typer.Option(
+        "--limit",
+        min=0,
+        help="Max rows to process (issues, for changelog); 0 = no limit. "
+        "Never walk a project by accident.",
+    ),
 ]
+
+
+def _limit_or_none(limit: int) -> int | None:
+    return None if limit == 0 else limit
+
 
 DestinationOption = Annotated[
     str,
@@ -158,7 +171,9 @@ def extract_fields(sink: SinkOption = "table", limit: LimitOption = 20) -> None:
     # terminal preview, and one that pipeline_run.run() (used by the other
     # extract commands) properly tears down but bare iteration does not.
     raw_fields = fields_mod.fetch(profile.base_url, profile.auth, client_cert=profile.client_cert)
-    rows = list(itertools.islice(flatten.fields(raw_fields, profile.instance_id), limit))
+    rows = list(
+        itertools.islice(flatten.fields(raw_fields, profile.instance_id), _limit_or_none(limit))
+    )
 
     table = Table(title="Jira fields")
     table.add_column("id")
@@ -202,7 +217,7 @@ def extract_issues(limit: LimitOption = 20, destination: DestinationOption = "fi
     info = _run_pipeline(
         profile,
         project=settings.jira_project,
-        limit=limit,
+        limit=_limit_or_none(limit),
         incremental_start=settings.jira_incremental_start,
         destination=destination,
         postgres_dsn=settings.postgres_dsn,
@@ -220,7 +235,7 @@ def extract_changelog(
     info = _run_pipeline(
         profile,
         project=settings.jira_project,
-        limit=limit,
+        limit=_limit_or_none(limit),
         resources=("issue_changelog",),
         destination=destination,
         postgres_dsn=settings.postgres_dsn,
@@ -301,7 +316,7 @@ def _quality_check_postgres(table: str) -> None:
             finished_at=finished_at,
             error=error,
         )
-    except Exception:  # noqa: BLE001 - best-effort bookkeeping, mirrors pipeline/run.py's _mark_dirty
+    except Exception:  # noqa: BLE001 - best-effort bookkeeping; nothing reads sync_run yet (finding 16)
         logger.warning("sync_run_write_failed", table=table, exc_info=True)
 
     if not result.passed:
@@ -453,8 +468,8 @@ def fields_promote(
 ) -> None:
     """Promote a field: select it for a real column/bridge table in analytics.issue.
 
-    Writes a new field_selection version (§2.1: append-only, never in place).
-    Nothing is rebuilt yet - analytics.issue doesn't exist until 3a.4.
+    Writes a new field_selection version (§2.1: append-only, never in place)
+    and queues a full rebuild of it, which the next `flowbi transform` runs.
     """
     settings = Settings()  # type: ignore[call-arg]  # required fields resolved from env at runtime
     dsn = _require_postgres_dsn(settings)
@@ -466,7 +481,10 @@ def fields_promote(
         schema_type,
         {"promote": True, "column_name": column, "target": target, "note": note},
     )
-    console.print(f"[green]OK[/green] version {version}: promoted {field_name!r} -> {column!r}")
+    console.print(
+        f"[green]OK[/green] version {version}: promoted {field_name!r} -> {column!r}; "
+        "rebuild queued, run `flowbi transform`"
+    )
 
 
 @fields_app.command("demote")

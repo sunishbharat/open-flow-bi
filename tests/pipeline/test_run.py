@@ -2,6 +2,7 @@ import re
 from unittest.mock import patch
 
 import dlt
+import pendulum
 import pyarrow.parquet as pq
 import pytest
 
@@ -46,6 +47,19 @@ ALL_IDS = [row["id"] for row in ROWS]
 _FLOOR_RE = re.compile(r'updated >= "([^"]+)"')
 
 
+def _passes_floor(row, jql):
+    """Apply a JQL `updated >= "YYYY-MM-DD HH:mm"` floor the way Jira does:
+    minute-granular, in the account timezone (UTC in these tests). A
+    date-only compare would let the 1-hour overlap (OVERLAP_SECONDS) pull in
+    the previous day's issue.
+    """
+    match = _FLOOR_RE.search(jql)
+    if not match:
+        return True
+    floor = pendulum.from_format(match.group(1), "YYYY-MM-DD HH:mm", tz="UTC")
+    return pendulum.parse(row["fields"]["updated"]) >= floor
+
+
 def _floor_filtered_search_pages(call_log):
     """Stand-in for _search_pages that filters ROWS the way a real Jira
     `updated >= "..."` JQL clause would, and records which issue ids each
@@ -53,13 +67,7 @@ def _floor_filtered_search_pages(call_log):
     """
 
     def fake(profile, jql, expand=None):
-        match = _FLOOR_RE.search(jql)
-        floor_date = match.group(1)[:10] if match else None
-        ids = [
-            row["id"]
-            for row in ROWS
-            if floor_date is None or row["fields"]["updated"][:10] >= floor_date
-        ]
+        ids = [row["id"] for row in ROWS if _passes_floor(row, jql)]
         call_log.append(ids)
         for row in ROWS:
             if row["id"] in ids:
@@ -126,13 +134,7 @@ def _floor_filtered_changelog_pages(call_log):
     """
 
     def fake(profile, jql, expand=None):
-        match = _FLOOR_RE.search(jql)
-        floor_date = match.group(1)[:10] if match else None
-        ids = [
-            row["id"]
-            for row in CHANGELOG_ROWS
-            if floor_date is None or row["fields"]["updated"][:10] >= floor_date
-        ]
+        ids = [row["id"] for row in CHANGELOG_ROWS if _passes_floor(row, jql)]
         call_log.append(ids)
         for row in CHANGELOG_ROWS:
             if row["id"] in ids:
@@ -141,8 +143,8 @@ def _floor_filtered_changelog_pages(call_log):
     return fake
 
 
-def _loaded_changelog_issue_ids(out_dir):
-    files = list(out_dir.glob("jira_raw/issue_changelog/*.parquet"))
+def _loaded_changelog_issue_ids(out_dir, table="issue_changelog"):
+    files = list(out_dir.glob(f"jira_raw/{table}/*.parquet"))
     ids: set[str] = set()
     for f in files:
         ids.update(str(v) for v in pq.read_table(f).column("issue_id").to_pylist())
@@ -369,6 +371,7 @@ def test_changelog_limit_truncated_run_advances_cursor_without_skipping_unfetche
         )
 
     assert _loaded_changelog_issue_ids(out_dir) == ["1", "2", "3"]
+    assert _loaded_changelog_issue_ids(out_dir, "issue_changelog_status") == ["1", "2", "3"]
 
     with (
         patch("openflowbi.pipeline.source.deployment_mod.account_timezone", return_value="UTC"),
@@ -388,3 +391,208 @@ def test_changelog_limit_truncated_run_advances_cursor_without_skipping_unfetche
     assert "1" not in call_log[1]
     assert "2" not in call_log[1]
     assert _loaded_changelog_issue_ids(out_dir) == CHANGELOG_ALL_IDS
+
+
+def _run_changelog(tmp_path, rows, limit=None):
+    out_dir = tmp_path / "out"
+    with (
+        patch("openflowbi.pipeline.source.deployment_mod.account_timezone", return_value="UTC"),
+        patch("openflowbi.pipeline.source._search_pages", return_value=iter(rows)),
+        patch("openflowbi.jira.changelog.fetch_per_issue", return_value=None),
+    ):
+        pipeline_run.run(
+            FAKE_PROFILE,
+            project="PROJ",
+            limit=limit,
+            out_dir=out_dir,
+            pipelines_dir=str(tmp_path / ".dlt"),
+            resources=("issue_changelog",),
+        )
+    return out_dir
+
+
+def test_changelog_status_row_is_written_for_every_issue_even_without_items(tmp_path):
+    """Architecture review finding 4: an issue with no item rows (never
+    transitioned, or per-issue tier unavailable) still gets a status row, so
+    the transform can tell it apart from an issue never extracted at all.
+    """
+    rows = [
+        {
+            "id": "1",
+            "fields": {"updated": "2024-01-01T00:00:00.000+0000"},
+            "changelog": {"total": 0, "histories": []},
+        },
+        # Embedded page truncated, per-issue tier unavailable (patched above).
+        {
+            "id": "2",
+            "fields": {"updated": "2024-01-02T00:00:00.000+0000"},
+            "changelog": {"total": 5, "histories": []},
+        },
+    ]
+    out_dir = _run_changelog(tmp_path, rows)
+
+    assert _loaded_changelog_issue_ids(out_dir) == []
+    files = list(out_dir.glob("jira_raw/issue_changelog_status/*.parquet"))
+    status = {
+        row["issue_id"]: (row["source"], row["changelog_complete"])
+        for f in files
+        for row in pq.read_table(f).to_pylist()
+    }
+    assert status == {1: ("expand", True), 2: ("per_issue", False)}
+
+
+def test_changelog_limit_never_cuts_an_issue_in_half(tmp_path):
+    """--limit counts issues for issue_changelog, not dlt yields: each issue
+    yields its item rows and then its status row, and a yield-counting limit
+    could stop between the two.
+    """
+    items = [{"field": "status", "to": "2"}, {"field": "assignee", "to": "x"}]
+    rows = [
+        {
+            "id": str(i),
+            "fields": {"updated": f"2024-01-0{i}T00:00:00.000+0000"},
+            "changelog": {"total": 1, "histories": [{"id": f"h{i}", "items": items}]},
+        }
+        for i in (1, 2)
+    ]
+    out_dir = _run_changelog(tmp_path, rows, limit=1)
+
+    loaded = [
+        row["item_index"]
+        for f in out_dir.glob("jira_raw/issue_changelog/*.parquet")
+        for row in pq.read_table(f).to_pylist()
+    ]
+    assert sorted(loaded) == [0, 1]
+    assert _loaded_changelog_issue_ids(out_dir, "issue_changelog_status") == ["1"]
+
+
+def test_changelog_limit_never_skips_an_issue_deferred_to_a_fallback_tier(tmp_path):
+    """Architecture review finding 6: issue 1's embedded changelog is truncated,
+    so it needs the per-issue tier. That tier used to run after the whole walk,
+    so --limit 2 loaded issues 2 and 3 instead, advancing the watermark past
+    issue 1, which no later run would fetch.
+    """
+    rows = [
+        {
+            "id": str(i),
+            "fields": {"updated": f"2024-01-0{i}T00:00:00.000+0000"},
+            "changelog": {"total": 5 if i == 1 else 0, "histories": []},
+        }
+        for i in (1, 2, 3)
+    ]
+    out_dir = _run_changelog(tmp_path, rows, limit=2)
+
+    assert _loaded_changelog_issue_ids(out_dir, "issue_changelog_status") == ["1", "2"]
+
+
+def test_a_package_left_by_a_failed_load_is_loaded_by_the_next_run(tmp_path):
+    """run() is split into extract/normalize/load so only load() sits under
+    the advisory lock (architecture review finding 7). pipeline.run() used to
+    finish a package a crashed run left behind; the split version must too.
+    """
+    out_dir = tmp_path / "out"
+    pipelines_dir = str(tmp_path / ".dlt")
+
+    def _run(rows):
+        with (
+            patch(
+                "openflowbi.pipeline.source.deployment_mod.account_timezone", return_value="UTC"
+            ),
+            patch("openflowbi.pipeline.source._search_pages", return_value=iter(rows)),
+        ):
+            return pipeline_run.run(
+                FAKE_PROFILE, project="PROJ", out_dir=out_dir, pipelines_dir=pipelines_dir
+            )
+
+    _run(ROWS[:2])
+    # Killed after extract and normalize: the package for issues 3-4 stays
+    # on disk, and the watermark already sits past them. (A first-ever run
+    # killed this way is different: the destination has no dataset yet, so
+    # dlt's sync_destination drops local state, watermark included, and the
+    # next run re-reads everything.)
+    with (
+        patch.object(dlt.Pipeline, "load", side_effect=RuntimeError("killed mid-load")),
+        pytest.raises(RuntimeError, match="killed mid-load"),
+    ):
+        _run(ROWS[2:4])
+    assert _loaded_issue_ids(out_dir) == ALL_IDS[:2]
+
+    info = _run(ROWS[4:])
+    assert len(info.loads_ids) == 2  # the leftover package and this run's
+    assert _loaded_issue_ids(out_dir) == ALL_IDS
+
+
+def _issue(issue_id, updated):
+    return {"id": issue_id, "key": f"PROJ-{issue_id}", "fields": {"updated": updated}}
+
+
+def _run_returning(tmp_path, rows, jqls=None):
+    """One real pipeline run whose search returns exactly `rows`, ignoring the
+    JQL floor, so dlt's own incremental filter is the thing under test."""
+
+    def fake(profile, jql, expand=None):
+        if jqls is not None:
+            jqls.append(jql)
+        yield from rows
+
+    with (
+        patch("openflowbi.pipeline.source.deployment_mod.account_timezone", return_value="UTC"),
+        patch("openflowbi.pipeline.source._search_pages", side_effect=fake),
+    ):
+        return pipeline_run.run(
+            FAKE_PROFILE,
+            project="PROJ",
+            out_dir=tmp_path / "out",
+            pipelines_dir=str(tmp_path / ".dlt"),
+        )
+
+
+def test_updates_straddling_a_dst_fall_back_both_load(tmp_path):
+    """Architecture review finding 1. Run 2's issue is 40 minutes later in
+    real time but sorts lower as a string (+0100 after the fall-back vs
+    +0200 before it), so a string cursor silently dropped it."""
+    _run_returning(tmp_path, [_issue("1", "2024-10-27T02:30:00.000+0200")])  # 00:30Z
+    _run_returning(tmp_path, [_issue("2", "2024-10-27T02:10:00.000+0100")])  # 01:10Z
+
+    assert _loaded_issue_ids(tmp_path / "out") == ["1", "2"]
+
+
+def test_late_indexed_issue_inside_the_overlap_window_still_loads(tmp_path):
+    """Architecture review finding 2. Cloud search is eventually consistent:
+    issue 2 was updated before run 1's watermark but only became searchable
+    afterwards. It is inside the 1-hour overlap, so run 2 keeps it; issue 3
+    is older than the overlap and stays filtered out."""
+    _run_returning(tmp_path, [_issue("1", "2024-01-01T10:00:00.000+0000")])
+
+    jqls: list[str] = []
+    _run_returning(
+        tmp_path,
+        [
+            _issue("3", "2024-01-01T08:59:00.000+0000"),
+            _issue("2", "2024-01-01T09:30:00.000+0000"),
+        ],
+        jqls,
+    )
+
+    # The JQL floor is lowered by the same hour, not only dlt's filter.
+    assert 'updated >= "2024-01-01 09:00"' in jqls[0]
+    assert _loaded_issue_ids(tmp_path / "out") == ["1", "2"]
+
+
+def test_a_cursor_stored_as_a_string_before_the_fix_is_migrated(tmp_path):
+    """Pipelines that ran before finding 1's fix hold a string last_value.
+    Without the migration dlt raises TypeError comparing it with the datetime
+    rows it gets now."""
+    _run_returning(tmp_path, [_issue("1", "2024-01-01T10:00:00.000+0000")])
+    name = pipeline_run.pipeline_name(FAKE_PROFILE.instance_id, "PROJ")
+    pipeline = dlt.attach(pipeline_name=name, pipelines_dir=str(tmp_path / ".dlt"))
+    with pipeline.managed_state() as state:
+        cursor = state["sources"]["jira"]["resources"]["issues"]["incremental"]["updated_at"]
+        cursor["last_value"] = "2024-01-01T10:00:00.000+0000"
+        cursor["start_value"] = "1970-01-01T00:00:00.000+0000"
+        cursor["initial_value"] = "1970-01-01T00:00:00.000+0000"
+
+    info = _run_returning(tmp_path, [_issue("2", "2024-01-01T11:00:00.000+0000")])
+
+    assert not info.has_failed_jobs
+    assert _loaded_issue_ids(tmp_path / "out") == ["1", "2"]

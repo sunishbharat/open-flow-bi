@@ -60,6 +60,12 @@ def postgres_dsn() -> Iterator[str]:
             )
             conn.execute(
                 sa.text(
+                    "CREATE TABLE jira_raw.issue_changelog_status ("
+                    "instance_id text, issue_id bigint, changelog_complete boolean)"
+                )
+            )
+            conn.execute(
+                sa.text(
                     "INSERT INTO jira_raw.issue_changelog "
                     "(instance_id, issue_id, history_id, item_index) VALUES "
                     "(:i, 1, 'h1', 0), (:i, 1, 'h1', 0)"

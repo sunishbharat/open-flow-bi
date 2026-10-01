@@ -1,8 +1,26 @@
 from collections.abc import Iterable, Iterator
 from typing import Any
 
+import pendulum
+
 from openflowbi.jira.changelog import ChangelogBatch
 from openflowbi.jira.fields import Field
+
+
+def _instant(value: str | None) -> pendulum.DateTime | None:
+    """Parse a Jira timestamp string into a timezone-aware instant.
+
+    `updated_at` is the dlt incremental cursor, and dlt compares cursor values
+    with plain `max()`: over raw strings that is a lexical compare, so
+    `...02:10+0100` (01:10Z) sorts below `...02:30+0200` (00:30Z) and a
+    genuinely newer update is dropped (architecture review finding 1).
+    """
+    if value is None:
+        return None
+    parsed = pendulum.parse(value)
+    if not isinstance(parsed, pendulum.DateTime):
+        raise ValueError(f"expected a full ISO datetime, got {value!r}")
+    return parsed
 
 
 def fields(raw_fields: Iterable[Field], instance_id: str) -> Iterator[dict[str, Any]]:
@@ -52,7 +70,7 @@ def issues(raw_issues: Iterable[dict[str, Any]], instance_id: str) -> Iterator[d
             "issue_id": int(issue["id"]),
             "issue_key": issue.get("key"),
             "created_at": fields.get("created"),
-            "updated_at": fields.get("updated"),
+            "updated_at": _instant(fields.get("updated")),
             "fields": fields,
         }
 
@@ -79,7 +97,8 @@ def changelog(
     onto every row as `updated_at` — distinct from `created_at` below, which
     is the *history* entry's created timestamp, not the issue's. This is what
     `pipeline/source.py`'s issue_changelog resource uses as its
-    `dlt.sources.incremental` cursor field, mirroring `issues`. Callers that
+    `dlt.sources.incremental` cursor field, mirroring `issues` (parsed to an
+    aware datetime for the same reason as `issues`' cursor). Callers that
     don't pass it (e.g. existing tests) get `updated_at=None` throughout.
     """
     # Not `issue_updated or {}`: the caller's dict starts empty and is
@@ -90,11 +109,9 @@ def changelog(
     if issue_updated is None:
         issue_updated = {}
     for issue_id, source, complete, histories in batches:
-        # Note: an issue with complete=False and no histories (per-issue tier
-        # itself unavailable) yields zero rows here — there is no row to carry
-        # changelog_complete for that issue. debug/queries.sql's "incomplete
-        # changelogs" check must therefore diff against the issues table, not
-        # rely on finding a changelog_complete=False row.
+        # An issue with no histories yields zero rows here, so these rows can't
+        # say whether an issue's changelog was extracted at all:
+        # changelog_status() below is the per-issue record of that.
         for history in histories:
             items = sorted(
                 history.get("items") or [],
@@ -108,7 +125,7 @@ def changelog(
                     "item_index": item_index,
                     "source": source,
                     "changelog_complete": complete,
-                    "updated_at": issue_updated.get(str(issue_id)),
+                    "updated_at": _instant(issue_updated.get(str(issue_id))),
                     "author": (history.get("author") or {}).get("name"),
                     "created_at": history.get("created"),
                     "field": item.get("field"),
@@ -119,3 +136,27 @@ def changelog(
                     "to_id": item.get("to"),
                     "to_value": item.get("toString"),
                 }
+
+
+def changelog_status(
+    batch: ChangelogBatch, instance_id: str, issue_updated: dict[str, str]
+) -> dict[str, Any]:
+    """One row per extracted issue saying whether its changelog is complete.
+
+    Pure, like changelog() above. The item rows can't carry this: an issue
+    with no histories (never transitioned, or the per-issue tier unavailable)
+    has no item row, so an incomplete extraction looked exactly like a
+    complete one with nothing in it (architecture review finding 4).
+    `updated_at` is the issue's `fields.updated` at extraction time: the
+    transform only trusts a changelog extracted for the issue's current
+    version, and it is also the resource's incremental cursor.
+    """
+    issue_id, source, complete, histories = batch
+    return {
+        "instance_id": instance_id,
+        "issue_id": int(issue_id),
+        "source": source,
+        "changelog_complete": complete,
+        "history_count": len(histories),
+        "updated_at": _instant(issue_updated.get(str(issue_id))),
+    }

@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from urllib.parse import urlparse
 
 import pendulum
@@ -110,7 +111,7 @@ def account_timezone(
     return timezone
 
 
-def jql_updated_floor(value: str, timezone: str) -> str:
+def jql_updated_floor(value: str | datetime, timezone: str) -> str:
     """Format an ISO `updated_at` cursor value as a JQL `updated >=` literal.
 
     Pure — no network, unit-testable directly. JQL date/time literals are
@@ -120,7 +121,7 @@ def jql_updated_floor(value: str, timezone: str) -> str:
     and truncated to the minute before it can be used as a filter — comparing
     raw ISO strings across offsets would silently mis-filter.
     """
-    parsed = pendulum.parse(value)
+    parsed = pendulum.instance(value) if isinstance(value, datetime) else pendulum.parse(value)
     if not isinstance(parsed, pendulum.DateTime):
         raise ValueError(f"expected a full ISO datetime cursor value, got {value!r}")
     return parsed.in_timezone(timezone).format("YYYY-MM-DD HH:mm")

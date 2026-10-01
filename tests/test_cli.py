@@ -149,3 +149,31 @@ def test_resolve_profile_logs_connection_state_without_secrets(monkeypatch, caps
     assert "mtls='configured'" in line
     assert "ca_bundle='/certs/combined-ca.pem'" in line
     assert "client-key.pem" not in line  # paths to key material are never logged
+
+
+def _extract_limit(monkeypatch, *args):
+    """The `limit` an extract command hands to the pipeline."""
+    from unittest.mock import patch
+
+    monkeypatch.setenv("FLOWBI_JIRA_BASE_URL", "https://example.atlassian.net")
+    with (
+        patch("openflowbi.cli._resolve_profile", return_value=_cloud_profile()),
+        patch("openflowbi.cli.pipeline_run.run") as run,
+    ):
+        result = runner.invoke(app, ["extract", *args])
+    assert result.exit_code == 0, result.output
+    return run.call_args.kwargs["limit"]
+
+
+def test_limit_zero_walks_everything_and_the_default_stays_bounded(monkeypatch):
+    # Architecture review finding 9: a scheduled full run needs an explicit
+    # unbounded mode instead of a "large enough" number that silently caps it.
+    assert _extract_limit(monkeypatch, "issues", "--limit", "0") is None
+    assert _extract_limit(monkeypatch, "changelog", "--limit", "0") is None
+    assert _extract_limit(monkeypatch, "issues") == 20
+    assert _extract_limit(monkeypatch, "changelog", "--limit", "7") == 7
+
+
+def test_negative_limit_is_rejected():
+    result = runner.invoke(app, ["extract", "issues", "--limit", "-1"])
+    assert result.exit_code == 2

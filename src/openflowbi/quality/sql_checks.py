@@ -48,20 +48,13 @@ BLOCKING: dict[str, str] = {
 
 # name -> SQL. Reported alongside BLOCKING, never fails the gate.
 #
-# Corrected against the real schema, not the design doc's §9 example as
-# written (trust the response over the doc):
-# `changelog_complete` is stamped by flatten.changelog() onto
-# jira_raw.issue_changelog rows, never onto jira_raw.issues — confirmed by
-# flatten.py's own comment ("an issue with complete=False and no histories
-# yields zero rows... there is no row to carry changelog_complete for that
-# issue") and by debug/queries.sql's pre-existing "Explicit
-# changelog_complete=False rows" query, which this mirrors. A live run
-# against the docker-compose Postgres (M7.6 acceptance check) hit
-# `UndefinedColumn: changelog_complete` on `jira_raw.issues` before this fix.
+# Completeness is recorded per issue in jira_raw.issue_changelog_status
+# (flatten.changelog_status). The earlier version of this check counted
+# changelog_complete=false item rows, and could only ever return 0: an
+# incomplete issue has no item rows (architecture review finding 4).
 ALERTING: dict[str, str] = {
     "changelog_incomplete": (
-        "SELECT count(DISTINCT issue_id) FROM jira_raw.issue_changelog "
-        "WHERE changelog_complete = false"
+        "SELECT count(*) FROM jira_raw.issue_changelog_status WHERE NOT changelog_complete"
     ),
 }
 

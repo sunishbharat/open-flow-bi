@@ -182,7 +182,8 @@ uv run flowbi transform [--rebuild-all] [--project X]   # materialize promoted c
 uv run flowbi fields request-rebuild [--project X]      # queue a rebuild for `flowbi transform` to drain
 ```
 
-`--limit` bounds every extract command — useful while testing before a full run.
+`--limit` bounds every extract command — useful while testing before a full run. It defaults
+to 20; `--limit 0` removes the bound, so a full walk always has to be asked for.
 
 ## Using Postgres
 
@@ -217,21 +218,21 @@ the env var per invocation rather than editing `.env` each time:
 
 ```bash
 # bash / Git Bash
-FLOWBI_JIRA_PROJECT=KAFKA uv run flowbi extract issues --limit 5000 --destination postgres
-FLOWBI_JIRA_PROJECT=KAFKA uv run flowbi extract changelog --limit 5000 --destination postgres
+FLOWBI_JIRA_PROJECT=KAFKA uv run flowbi extract issues --limit 0 --destination postgres
+FLOWBI_JIRA_PROJECT=KAFKA uv run flowbi extract changelog --limit 0 --destination postgres
 # repeat for HIVE, HADOOP, ZOOKEEPER, ...
 ```
 
 ```powershell
 # PowerShell
 $env:FLOWBI_JIRA_PROJECT = "KAFKA"
-uv run flowbi extract issues --limit 5000 --destination postgres
-uv run flowbi extract changelog --limit 5000 --destination postgres
+uv run flowbi extract issues --limit 0 --destination postgres
+uv run flowbi extract changelog --limit 0 --destination postgres
 # repeat for HIVE, HADOOP, ZOOKEEPER, ...
 ```
 
-`--limit 5000` is just a generously large number so it isn't capped at the CLI default of 20 — raise
-it if a project has more issues than that. `extract changelog` is the slow part (per-issue changelog
+`--limit 0` walks the whole project; without it, each command stops at the CLI default of 20.
+`extract changelog` is the slow part (per-issue changelog
 fetches); expect it to take a while per project. Once every project is extracted, run one **unscoped**
 rebuild to cover all of them in a single pass — see "Field discovery and materialization" below.
 
@@ -251,8 +252,8 @@ uv run flowbi fields list --custom-only
 once, live, to refresh field names; `fields list` only reads back what was already discovered, so
 it works even without Jira reachable.
 
-Once you've found a field worth having, select it — this only records a decision, it doesn't touch
-Jira or rebuild anything by itself:
+Once you've found a field worth having, select it. This records the decision and queues a full
+rebuild of it for the next `flowbi transform`; it doesn't touch Jira or rebuild anything by itself:
 
 ```bash
 uv run flowbi fields promote "Story Points" --column story_points   # add --schema-type if the name is ambiguous
@@ -262,7 +263,9 @@ uv run flowbi fields import config/fields.yml                       # re-import 
 ```
 
 Every save writes a brand-new version rather than editing in place, so `field_selection` doubles as
-a full audit trail of who decided what, when.
+a full audit trail of who decided what, when. Column names that already exist in `analytics.issue`
+(`issue_key`, `created_at`, ...) or name an existing `analytics` table (`issue`,
+`issue_status_interval`) are rejected.
 
 **Materialize the selection** — turns the current decision into real, queryable data. This is a
 `CREATE ... AS SELECT` over data you already extracted, never a Jira re-read, so promoting and
@@ -284,8 +287,10 @@ This populates two things in `analytics`:
 
 An incremental `flowbi transform` (no `--rebuild-all`) only touches issues marked dirty by a more
 recent `extract issues`/`extract changelog` run, so it's safe to run after every extraction, not just
-once. To queue a rebuild without running it inline — e.g. from a script — use `flowbi fields
-request-rebuild [--project X]`; the next `flowbi transform` call drains the queue.
+once. `promote` and `import` queue a full rebuild of the new selection themselves, so the next
+`flowbi transform` (incremental or not) fills a newly promoted column for every issue, not just the
+dirty ones. To queue one by hand — e.g. from a script — use `flowbi fields request-rebuild
+[--project X]`; the next `flowbi transform` call drains the queue.
 
 ## Dashboard: Cube + Superset
 
@@ -302,6 +307,12 @@ docker compose up -d cube superset
 ```
 
 Whatever you choose for `reader_pw` must also be set as `CUBE_READER_PW` in `.env`.
+
+`roles.sql` is safe to re-run. It makes `flowbi_writer` the owner of `jira_raw`, `flowbi_ops` and
+`analytics`, and of every table in them, so the pipeline can run as `flowbi_writer` instead of the
+bootstrap superuser. To do that, point `FLOWBI_POSTGRES_DSN` at `flowbi_writer` for `alembic`,
+`flowbi extract` and `flowbi transform` alike. If you keep running any of them as the superuser,
+re-run `roles.sql` afterwards to hand the new tables over.
 
 **Build a chart**, at http://localhost:8088 (first login: `admin` / your `.env`'s `SUPERSET_ADMIN_PW`):
 
@@ -369,8 +380,9 @@ small, manual YAML edit. Two paths, pick based on how the field will be used.
 ### Path A — promote, then expose it
 
 1. `uv run flowbi fields list --min-fill 0.1` — find the field's exact display name.
-2. `uv run flowbi fields promote "Field Name" --column your_column_name` — records the decision only.
-3. `uv run flowbi transform --rebuild-all` — materializes `your_column_name` as a real column in
+2. `uv run flowbi fields promote "Field Name" --column your_column_name` — records the decision and
+   queues its rebuild.
+3. `uv run flowbi transform` — materializes `your_column_name` as a real column in
    `analytics.issue` (or a bridge table, for array-typed fields — see "Field discovery and
    materialization" above).
 4. Expose it in Cube — add a dimension to `cube/model/cubes/issue.yml` (reads `analytics.issue`, joined
