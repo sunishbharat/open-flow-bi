@@ -459,10 +459,28 @@ re-run `roles.sql` afterwards to hand the new tables over.
 
 **Build a chart**, at http://localhost:8088 (first login: `admin` / your `.env`'s `SUPERSET_ADMIN_PW`):
 
-1. **Settings → Database Connections → + Database → PostgreSQL**: host `cube`, port `15432`,
-   database `db`, and `.env`'s `CUBE_SQL_USER` / `CUBE_SQL_PASSWORD` as username and password. Step 5
-   of "Running with Docker" below has the details.
-2. **Datasets → + Dataset** — table `flow`
+1. **Settings → Database Connections → + Database → PostgreSQL**, then click "Connect this database
+   with a SQLAlchemy URI string instead" and enter:
+
+   ```
+   postgresql://<CUBE_SQL_USER>:<CUBE_SQL_PASSWORD>@cube:15432/db
+   ```
+
+   For example, with `.env`'s `CUBE_SQL_USER=superset` and `CUBE_SQL_PASSWORD=cube_sql_dev_pw`:
+   `postgresql://superset:cube_sql_dev_pw@cube:15432/db`. URL-encode `@ : / #` in the password.
+
+   | Part | Value | Why |
+   |---|---|---|
+   | Host | `cube` | Superset runs in its own container, where `localhost` is Superset itself. It reaches Cube by its compose service name |
+   | Port | `15432` | Cube's SQL API |
+   | Database | `db` | Cube ignores the name; any value works |
+   | User / password | `CUBE_SQL_USER` / `CUBE_SQL_PASSWORD` from `.env` | Cube's own SQL API login, not a Postgres role |
+
+   Superset connects to **Cube**, never to Postgres. `localhost:5433/openflowbi` is Postgres's port on
+   your machine: from inside the Superset container it doesn't resolve, and even if it did, it would
+   bypass Cube, so there'd be no `flow` view. **Test Connection**, then **Connect**. Step 5 of
+   "Running with Docker" below has the same settings as a form.
+2. **Datasets → + Dataset**: that database, schema `public`, table `flow`
 3. **Charts → + Chart** — pick a chart type, a dimension, a metric, then save it to a dashboard
 
 ### Example: filtering issues into a chart
@@ -516,6 +534,35 @@ deployment would run. It holds only the runtime: every package is installed from
 so every run names its own command. The `flowbi` service in `docker-compose.yml` runs it against the
 compose Postgres: `docker compose run --rm flowbi <command>`. It's behind a `tools` profile, so a
 plain `docker compose up` never starts it.
+
+### Quickstart script
+
+One script runs every step below, asking before each one:
+
+```bash
+./scripts/quickstart.sh              # bash: Git Bash on Windows, macOS, Linux, WSL
+./scripts/quickstart.sh --limit 0    # extract the whole project (default: 50 issues)
+./scripts/quickstart.sh --image ghcr.io/<owner>/openflowbi-core:<version>   # download, don't build
+./scripts/quickstart.sh --yes        # accept every default, no questions
+```
+
+It needs only Docker and curl (`uv` too if HTTPS on your machine is inspected by antivirus or a
+proxy, to build the CA bundle). It:
+1. writes `.env`, asking for your Jira details and generating every password;
+2. creates `.build-ca.pem`;
+3. gets the `openflowbi/core:dev` image. It asks, in order, whether to:
+   - use the copy already on this machine;
+   - download a prebuilt image (for example from ghcr.io), tagged locally as
+     `openflowbi/core:dev` so the compose file runs it. The script remembers the image name in
+     `.env` for the next run;
+   - build it from source;
+4. loads your Jira data, promotes the two fields the dashboard reads and builds the analytics
+   tables;
+5. applies the database roles and starts Cube and Superset.
+
+At the end it prints the login and the Cube connection string to paste into Superset. It's safe to
+re-run: existing `.env` values are kept, and extracts continue where the last run stopped. The
+sections below are the same steps by hand.
 
 This walkthrough starts from nothing (no images, no volumes) and ends with a bar chart in Superset.
 It needs Docker and a filled-in `.env` (see "Configuration"; the `.env.example` defaults work as-is
@@ -706,6 +753,7 @@ every issue older than them.
 | `transform` reports many "skipped (incomplete changelog)" | see `--reset-watermark` under "Field discovery and materialization" |
 | Superset: `The password provided for username "" is incorrect` | the Username field was left blank, or the URI still contains `<...>` placeholders; enter the real `CUBE_SQL_USER`/`CUBE_SQL_PASSWORD` (step 5) |
 | Superset Test Connection fails | check `CUBE_SQL_USER`/`CUBE_SQL_PASSWORD` in `.env`, then `docker compose logs cube` |
+| Superset Test Connection fails, or no `flow` table, with a URI on `localhost:5433` or `localhost:15432` | the URI points at Postgres or at Superset's own container. Use `postgresql://<CUBE_SQL_USER>:<CUBE_SQL_PASSWORD>@cube:15432/db` (see "Dashboard: Cube + Superset") |
 | Chart: `password authentication failed for user "cube_reader"` | `roles.sql` ran with a `reader_pw` other than `.env`'s `CUBE_READER_PW`. Re-run it with the right value, then `docker compose restart cube`. To test, connect over the network: `psql -h postgres -U cube_reader` inside the Postgres container. A plain `psql` there is trusted without a password, so it proves nothing |
 | Superset logs `CERTIFICATE_VERIFY_FAILED` installing `psycopg2-binary` | Superset's start-up `pip install` also uses `.build-ca.pem`: re-run the script (step 1), then `docker compose up -d --force-recreate superset` |
 
