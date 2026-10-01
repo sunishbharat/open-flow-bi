@@ -250,35 +250,6 @@ SELECT source, count(*) FROM jira_raw.issue_changelog GROUP BY source;
 
 Only then move to `--limit 0`, one project at a time.
 
-### 5. Things to know about Cloud
-
-- **Rate limits are shared across the whole Atlassian site**, roughly 65,000 points an hour for every
-  integration together. flowbi doesn't yet slow itself down as that budget runs low, so a large
-  backfill can crowd out other tools on the same site. Extract one project at a time, use `--limit`,
-  and run large first loads outside working hours.
-- **Wrong credentials stop the run.** Cloud can answer a search made with bad credentials with an
-  empty result instead of a `401`. flowbi checks the account first (`GET /myself`) and stops with
-  "Jira Cloud rejected the credentials..." rather than loading nothing.
-- **Search results take seconds to minutes to appear.** Cloud's search index is eventually
-  consistent. Each incremental run re-reads the last hour to catch late arrivals, so nothing is
-  missed.
-- **Changelog authors are empty on Cloud.** Atlassian removed the field flowbi currently reads for
-  privacy reasons. Status history and cycle times are unaffected.
-- **Changelogs come from a three-step fallback.** flowbi first asks for them with the search, then
-  uses Cloud's bulk changelog endpoint (still experimental at Atlassian), then fetches one issue at a
-  time. Each step is tried automatically if the previous one isn't available.
-
-### Cloud troubleshooting
-
-| Symptom | Likely cause |
-|---|---|
-| "Jira Cloud rejected the credentials" | email and token wrong, expired, from different accounts, or API tokens disabled by your org's policy |
-| `doctor` shows "Account timezone: unavailable" | same as above |
-| Extraction succeeds but loads 0 issues | the service account can't browse the project, or `FLOWBI_JIRA_PROJECT` is wrong |
-| `certificate verify failed` | TLS inspection: regenerate the CA bundle (step 3) |
-| Connection timeout or refused | firewall, proxy (`HTTPS_PROXY`) or Atlassian IP allowlist (step 3) |
-| `429 Too Many Requests` | the site-wide rate limit is exhausted: wait, then continue with a smaller `--limit` |
-
 ## CLI
 
 ```bash
