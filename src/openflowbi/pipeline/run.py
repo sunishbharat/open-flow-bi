@@ -54,6 +54,25 @@ def _migrate_string_cursors(pipeline: Any) -> None:
                     cursor[key] = parse_cursor(cursor[key])
 
 
+def _reset_watermarks(pipeline: Any, resources: tuple[str, ...]) -> None:
+    """Forget the incremental cursor of each resource, so this run walks from
+    the configured incremental start again.
+
+    The way to backfill `issue_changelog_status` rows for issues whose
+    changelog was extracted before that table existed (architecture review
+    finding 4's upgrade note): `transform` skips those issues until a fresh
+    extraction records them as complete. Called after `sync_destination()`,
+    so it also resets a watermark that only the destination holds. The
+    reset is written to local state immediately and to the destination with
+    the next successful load.
+    """
+    with pipeline.managed_state() as state:
+        resource_states = state.get("sources", {}).get("jira", {}).get("resources", {})
+        for name in resources:
+            resource_states.get(name, {}).pop("incremental", None)
+    logger.info("watermark_reset", pipeline=pipeline.pipeline_name, resources=list(resources))
+
+
 def run(
     profile: DeploymentProfile,
     project: str | None = None,
@@ -64,6 +83,7 @@ def run(
     incremental_start: str = DEFAULT_INCREMENTAL_START,
     destination: str = "filesystem",
     postgres_dsn: str | None = None,
+    reset_watermark: bool = False,
 ) -> Any:
     pipeline_kwargs: dict[str, Any] = {}
     if pipelines_dir is not None:
@@ -109,6 +129,8 @@ def run(
     # pre-finding-1 string cursors in it.
     pipeline.sync_destination()
     _migrate_string_cursors(pipeline)
+    if reset_watermark:
+        _reset_watermarks(pipeline, resources)
     source = jira_source(
         profile,
         project=project,

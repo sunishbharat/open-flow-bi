@@ -8,9 +8,20 @@ services:
     # Host port 5433, not 5432: this machine already runs an unrelated
     # postgres container (jira-postgres) on 5432 for a different project.
     ports: ["5433:5432"]
+    # Named volume: without it the data lives in an anonymous volume tied to one
+    # container, and `docker compose down` + `up` silently starts an empty
+    # database (found 2026-10-01: the KAFKA data was orphaned that way).
+    volumes:
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U flowbi"]
+      # -d: without it pg_isready also targets a database named after the user
+      # ("flowbi"), which doesn't exist and fills the log with FATALs.
+      test: ["CMD-SHELL", "pg_isready -U flowbi -d openflowbi"]
       interval: 2s
+      retries: 10
+      # A first start runs initdb, which stops and restarts the server; failures
+      # during this window don't count, so dependents don't give up too early.
+      start_period: 30s
 
   # docs/phase4-cube-dashboard-design.md §5/P4-D2. Local dev only — Cube
   # Store (pre-aggregations) intentionally not added here; nothing in the
@@ -55,7 +66,12 @@ services:
     ports: ["8088:8088"]
     environment:
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      # The driver install below goes through Norton's TLS interception too;
+      # PIP_CERT makes pip trust the same combined bundle the flowbi service
+      # uses (pip only - nothing else in Superset reads it).
+      PIP_CERT: /certs/ca.pem
     volumes:
+      - ${FLOWBI_BUILD_CA_BUNDLE:-./.build-ca.pem}:/certs/ca.pem:ro
       - superset_home:/app/superset_home
       # Persist the pip-installed driver across container restarts (below)
       # instead of re-downloading it every `docker compose up` — found live
@@ -76,6 +92,43 @@ services:
       cube:
         condition: service_started
 
+  # The openflowbi/core image (Dockerfile), for testing the image locally before
+  # Cloud Foundry. Profile-gated: `docker compose up` does not start it. One-off
+  # commands, e.g.:
+  #   docker compose run --rm flowbi alembic upgrade head
+  #   docker compose run --rm flowbi flowbi extract issues --destination postgres
+  flowbi:
+    profiles: ["tools"]
+    image: openflowbi/core:dev
+    build:
+      context: .
+      secrets: [ca]
+    env_file: .env
+    environment:
+      # Inside the compose network Postgres is postgres:5432, not localhost:5433.
+      FLOWBI_POSTGRES_DSN: postgresql://flowbi:flowbi@postgres:5432/openflowbi
+      # Norton intercepts HTTPS from containers too, so Jira calls need the same
+      # combined bundle at runtime. Mounted, never baked into the image.
+      REQUESTS_CA_BUNDLE: /certs/ca.pem
+      SSL_CERT_FILE: /certs/ca.pem
+    volumes:
+      - ${FLOWBI_BUILD_CA_BUNDLE:-./.build-ca.pem}:/certs/ca.pem:ro
+      - ./out:/app/out
+      - flowbi_dlt:/home/flowbi/.dlt
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+# CA bundle for TLS-intercepting proxies/antivirus, used by the image build (as a
+# secret, never copied into the image) and mounted into flowbi and superset.
+# Create it with `uv run python scripts/make_ca_bundle.py` (public CAs + this
+# machine's trusted roots); FLOWBI_BUILD_CA_BUNDLE overrides the path.
+secrets:
+  ca:
+    file: ${FLOWBI_BUILD_CA_BUNDLE:-./.build-ca.pem}
+
 volumes:
+  pgdata:
+  flowbi_dlt:
   superset_home:
   superset_site_packages:

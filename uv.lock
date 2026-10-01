@@ -1286,7 +1286,9 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
-    { name = "dlt", extra = ["duckdb", "filesystem", "parquet", "postgres"] },
+    { name = "dlt", extra = ["parquet", "postgres"] },
+    { name = "narwhals" },
+    { name = "pandera" },
     { name = "pendulum" },
     { name = "pydantic-settings" },
     { name = "pyrate-limiter" },
@@ -1298,9 +1300,8 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "dlt", extra = ["duckdb", "filesystem"] },
     { name = "mypy" },
-    { name = "narwhals" },
-    { name = "pandera" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-recording" },
@@ -1312,7 +1313,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.20.0" },
-    { name = "dlt", extras = ["duckdb", "filesystem", "parquet", "postgres"], specifier = ">=1.30.0" },
+    { name = "dlt", extras = ["parquet", "postgres"], specifier = ">=1.30.0" },
+    { name = "narwhals", specifier = ">=2.26.0" },
+    { name = "pandera", specifier = ">=0.33.1" },
     { name = "pendulum", specifier = ">=3.2.0" },
     { name = "pydantic-settings" },
     { name = "pyrate-limiter", specifier = ">=4.5.0" },
@@ -1324,9 +1327,8 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "dlt", extras = ["duckdb", "filesystem"], specifier = ">=1.30.0" },
     { name = "mypy", specifier = ">=2.3.1" },
-    { name = "narwhals", specifier = ">=2.26.0" },
-    { name = "pandera", specifier = ">=0.33.1" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-recording", specifier = ">=0.13.4" },

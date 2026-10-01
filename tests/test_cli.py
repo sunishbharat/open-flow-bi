@@ -151,8 +151,8 @@ def test_resolve_profile_logs_connection_state_without_secrets(monkeypatch, caps
     assert "client-key.pem" not in line  # paths to key material are never logged
 
 
-def _extract_limit(monkeypatch, *args):
-    """The `limit` an extract command hands to the pipeline."""
+def _extract_kwargs(monkeypatch, *args):
+    """The keyword arguments an extract command hands to the pipeline."""
     from unittest.mock import patch
 
     monkeypatch.setenv("FLOWBI_JIRA_BASE_URL", "https://example.atlassian.net")
@@ -162,7 +162,17 @@ def _extract_limit(monkeypatch, *args):
     ):
         result = runner.invoke(app, ["extract", *args])
     assert result.exit_code == 0, result.output
-    return run.call_args.kwargs["limit"]
+    return run.call_args.kwargs
+
+
+def test_reset_watermark_is_opt_in_on_extract_changelog(monkeypatch):
+    assert _extract_kwargs(monkeypatch, "changelog")["reset_watermark"] is False
+    assert _extract_kwargs(monkeypatch, "changelog", "--reset-watermark")["reset_watermark"]
+
+
+def _extract_limit(monkeypatch, *args):
+    """The `limit` an extract command hands to the pipeline."""
+    return _extract_kwargs(monkeypatch, *args)["limit"]
 
 
 def test_limit_zero_walks_everything_and_the_default_stays_bounded(monkeypatch):

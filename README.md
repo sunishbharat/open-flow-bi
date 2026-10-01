@@ -3,6 +3,53 @@
 Self-hosted Jira flow metrics: full issue + changelog history extracted into Postgres, modeled in
 Cube, and visualized in Superset — no SaaS, no per-seat licensing.
 
+## How it works
+
+```mermaid
+flowchart LR
+    jira["Jira<br/>Cloud · Server · DC"]
+
+    subgraph cli["flowbi CLI"]
+        direction TB
+        extract["extract<br/>issues + changelog"]
+        fields["fields<br/>discover · promote"]
+        transform["transform"]
+    end
+
+    subgraph pg["PostgreSQL"]
+        direction TB
+        raw[("jira_raw<br/>issues · changelog")]
+        ops[("flowbi_ops<br/>field selection · dirty queue")]
+        analytics[("analytics<br/>issue · status intervals · bridge tables")]
+    end
+
+    parquet[("Parquet files<br/>out/")]
+    cube["Cube<br/>semantic model · flow view"]
+    superset["Superset<br/>charts · dashboards"]
+    user(("You"))
+
+    jira -- "REST API<br/>incremental" --> extract
+    extract --> raw
+    extract -. "marks changed issues" .-> ops
+    extract -. "--destination filesystem" .-> parquet
+    fields --> ops
+    raw --> transform
+    ops --> transform
+    transform --> analytics
+    analytics --> cube
+    raw -- "fast path" --> cube
+    cube -- "SQL API" --> superset
+    superset --> user
+```
+
+| Stage | Command | What happens |
+|---|---|---|
+| **1. Extract** | `flowbi extract issues` / `extract changelog` | Pulls new and changed issues and their full status history from Jira into `jira_raw`. Loads are incremental and safe to re-run. Changed issues are queued for the next transform. |
+| **2. Choose fields** | `flowbi fields discover` / `promote` | Measures how often each Jira field is filled in, then records which ones to turn into real columns. Every change is versioned. |
+| **3. Transform** | `flowbi transform` | Rebuilds only the queued issues into `analytics`: one row per issue with your promoted columns, plus one row per status period for cycle time. Jira isn't called again. |
+| **4. Model** | Cube (`cube/model/`) | Turns the tables into named dimensions and measures, exposed together as one `flow` view. |
+| **5. Explore** | Superset | Build charts and dashboards in the browser without writing SQL. |
+
 ## Features
 
 - Extracts Jira issues and their complete changelog history (Jira Cloud and Server/Data Center)
@@ -18,7 +65,8 @@ Cube, and visualized in Superset — no SaaS, no per-seat licensing.
 ## Requirements
 
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)
-- Docker, for the Postgres/Cube/Superset stack
+- Docker, for the Postgres/Cube/Superset stack, and optionally for running the pipeline itself as
+  a container (see "Running with Docker")
 - A Jira Cloud or Server/Data Center instance — or just try the Quickstart below, which uses a
   public Jira instance and needs no account
 
@@ -150,11 +198,14 @@ HTTPS traffic with a company root certificate. Build a combined bundle of the pu
 root, then point `REQUESTS_CA_BUNDLE` at it:
 
 ```bash
-cat "$(uv run python -c 'import certifi; print(certifi.where())')" company-root-ca.pem > combined-ca.pem
-export REQUESTS_CA_BUNDLE=$PWD/combined-ca.pem
+uv run python scripts/make_ca_bundle.py --out combined-ca.pem   # public CAs + your OS's trusted roots, then a check
+export REQUESTS_CA_BUNDLE=$PWD/combined-ca.pem                  # PowerShell: $env:REQUESTS_CA_BUNDLE = "$PWD\combined-ca.pem"
 ```
 
 It must be the combined file: pointing it at the company root alone breaks every other HTTPS host.
+Antivirus TLS scanning (e.g. Norton Web/Mail Shield) does the same re-signing, and the script picks
+its root up the same way. The Docker stack uses its own copy of this bundle, `.build-ca.pem` (see
+"Running with Docker").
 
 ### Troubleshooting
 
@@ -175,6 +226,7 @@ uv run flowbi doctor                            # deployment type, connectivity,
 uv run flowbi extract fields --sink table       # preview available fields
 uv run flowbi extract issues --limit N          # extract issues
 uv run flowbi extract changelog --limit N       # extract full changelog history
+uv run flowbi extract changelog --reset-watermark   # re-walk all changelogs from the start (backfill)
 uv run flowbi quality check <table>             # validate extracted data
 uv run flowbi fields discover [--project X]     # refresh field fill-rate stats (needs Postgres)
 uv run flowbi fields list [--min-fill 0.1]      # show fields sorted by fill rate
@@ -292,21 +344,51 @@ once. `promote` and `import` queue a full rebuild of the new selection themselve
 dirty ones. To queue one by hand — e.g. from a script — use `flowbi fields request-rebuild
 [--project X]`; the next `flowbi transform` call drains the queue.
 
+`flowbi transform` only rebuilds an issue's status intervals once its changelog has been recorded as
+fully extracted, and reports the rest as "skipped (incomplete changelog)". Changelogs extracted before
+that record existed count as incomplete, so their issues keep their previous intervals. To backfill,
+re-walk the changelog from the start:
+
+```bash
+uv run flowbi extract changelog --destination postgres --limit 0 --reset-watermark
+uv run flowbi transform     # re-extracted issues are marked dirty, so incremental is enough
+```
+
+On Server/DC this fetches every issue's changelog again, which is slow. To spread it out, run the
+first command with e.g. `--limit 1000`, then repeat it **without** `--reset-watermark` until the
+skipped count reaches zero. Only the first run should reset.
+
 ## Dashboard: Cube + Superset
 
 A browser-based dashboard for building charts against the extracted data — no SQL required.
 
 **One-time setup**, once you have Postgres data (see above):
 
-```bash
-docker exec -it open-flow-bi-postgres-1 psql -U flowbi -d openflowbi \
-  -v writer_pw=<pick a password> -v reader_pw=<pick a password> -f migrations/sql/roles.sql
-docker exec -it open-flow-bi-postgres-1 psql -U flowbi -d openflowbi \
-  -f migrations/sql/cube_reader_grants.sql
-docker compose up -d cube superset
-```
+1. **Promote the two fields the Cube model reads.** On a fresh database, every chart otherwise fails
+   with `relation "analytics.fix_version" does not exist`:
 
-Whatever you choose for `reader_pw` must also be set as `CUBE_READER_PW` in `.env`.
+   ```bash
+   uv run flowbi fields discover
+   uv run flowbi fields promote "Resolution" --column resolution_name --schema-type resolution
+   uv run flowbi fields promote "Fix Version/s" --column fix_version --target bridge_table
+   uv run flowbi transform
+   ```
+
+2. **Create the database roles, then start Cube and Superset.** The reader password must be `.env`'s
+   `CUBE_READER_PW`, so it's read from there:
+
+   ```bash
+   reader=$(grep '^CUBE_READER_PW=' .env | cut -d= -f2- | tr -d '\r')
+   docker exec -i open-flow-bi-postgres-1 psql -U flowbi -d openflowbi \
+     -v writer_pw=flowbi_writer_local -v reader_pw="$reader" -f - < migrations/sql/roles.sql
+   docker exec -i open-flow-bi-postgres-1 psql -U flowbi -d openflowbi \
+     -f - < migrations/sql/cube_reader_grants.sql
+   docker compose up -d cube superset
+   ```
+
+The scripts are piped in on stdin (`-f -`) because they live on your machine, not inside the
+Postgres container. PowerShell has no `<`; see step 5 of "Running with Docker" below for the
+PowerShell form.
 
 `roles.sql` is safe to re-run. It makes `flowbi_writer` the owner of `jira_raw`, `flowbi_ops` and
 `analytics`, and of every table in them, so the pipeline can run as `flowbi_writer` instead of the
@@ -316,8 +398,9 @@ re-run `roles.sql` afterwards to hand the new tables over.
 
 **Build a chart**, at http://localhost:8088 (first login: `admin` / your `.env`'s `SUPERSET_ADMIN_PW`):
 
-1. **Settings → Database Connections → + Database → PostgreSQL** —
-   `postgresql://<CUBE_SQL_USER>:<CUBE_SQL_PASSWORD>@cube:15432/db`
+1. **Settings → Database Connections → + Database → PostgreSQL**: host `cube`, port `15432`,
+   database `db`, and `.env`'s `CUBE_SQL_USER` / `CUBE_SQL_PASSWORD` as username and password. Step 5
+   of "Running with Docker" below has the details.
 2. **Datasets → + Dataset** — table `flow`
 3. **Charts → + Chart** — pick a chart type, a dimension, a metric, then save it to a dashboard
 
@@ -363,6 +446,207 @@ If the field you want to filter or group by isn't available yet, it needs adding
 first — see `cube/README.md` and "For developers" below. If you add a new dataset over `flow` (rather
 than reusing an existing one), re-sync its columns from **Data → Datasets → Edit → Columns → Sync
 columns from source** after any Cube model change.
+
+## Running with Docker
+
+The pipeline also ships as a container image, `openflowbi/core`, the same image a Cloud Foundry
+deployment would run. It holds only the runtime: every package is installed from a prebuilt wheel
+(nothing is compiled), there are no dev tools, it runs as a non-root user, and it has no entrypoint,
+so every run names its own command. The `flowbi` service in `docker-compose.yml` runs it against the
+compose Postgres: `docker compose run --rm flowbi <command>`. It's behind a `tools` profile, so a
+plain `docker compose up` never starts it.
+
+This walkthrough starts from nothing (no images, no volumes) and ends with a bar chart in Superset.
+It needs Docker and a filled-in `.env` (see "Configuration"; the `.env.example` defaults work as-is
+against Apache's public Jira). Commands are the same in bash and PowerShell unless shown separately.
+
+### 1. Create the CA bundle (once)
+
+The stack needs a CA bundle at `.build-ca.pem` in the repo root. It's used three times:
+- during the image build, so `uv` can download wheels;
+- when `flowbi` runs, so it can reach Jira over HTTPS;
+- when Superset first starts, so `pip` can install its Postgres driver.
+
+It's passed to the build as a secret and mounted read-only into the containers, never copied into an
+image. The file is gitignored and excluded from the build context.
+
+Create it with:
+
+```bash
+uv run python scripts/make_ca_bundle.py
+```
+
+This writes the public CAs plus every root certificate your operating system already trusts
+(Windows certificate store, macOS keychains, or the Linux system bundle). Anything that re-signs
+HTTPS on your network, such as a corporate proxy, Zscaler or antivirus TLS scanning, installs its
+root there, so you don't need to know which tool it is or where its certificate lives. Without one,
+the extra roots do no harm.
+
+The script then checks the file the way a container will, over HTTPS to pypi.org and your Jira host
+(from `.env`):
+
+```
+wrote .build-ca.pem: 121 public CAs + 41 from this machine's trust store
+  pypi.org: OK (certificate issued by Norton Web/Mail Shield)
+  issues.apache.org: OK (certificate issued by Norton Web/Mail Shield)
+```
+
+`OK` on every line means you're done. `FAILED` means something re-signs that traffic with a root
+this machine doesn't trust either. Get that root certificate from your IT team, append it to the
+file, and run the check again with `--check-host <host>`. Re-run the script whenever your proxy,
+antivirus or company root certificate changes.
+
+To keep the bundle somewhere else, write it with `--out <path>` and set `FLOWBI_BUILD_CA_BUNDLE` to
+that path.
+
+### 2. Build the image
+
+```bash
+docker compose --profile tools build flowbi
+```
+
+The equivalent without compose:
+`docker build --platform linux/amd64 --secret id=ca,src=.build-ca.pem -t openflowbi/core:dev .`
+
+The build fails, rather than compiling anything, if a dependency has no prebuilt wheel.
+
+### 3. Smoke-test the image
+
+```bash
+docker images openflowbi/core:dev                                    # size
+docker run --rm openflowbi/core:dev                                  # prints `flowbi --help`
+docker run --rm openflowbi/core:dev python -c "import pandera.pyarrow, pyarrow, psycopg2; print('ok')"
+```
+
+### 4. Load data into Postgres
+
+```bash
+docker compose up -d postgres
+docker compose run --rm flowbi flowbi doctor
+docker compose run --rm flowbi alembic upgrade head
+docker compose run --rm flowbi flowbi extract issues    --destination postgres --limit 50
+docker compose run --rm flowbi flowbi extract changelog --destination postgres --limit 50
+```
+
+- `doctor` should show the deployment and version. Against the anonymous Apache default,
+  "Account timezone: unavailable" is expected.
+- Use `--limit 0` instead of `--limit 50` to extract a whole project.
+- Settings come from `.env`, except `FLOWBI_POSTGRES_DSN`: inside compose, Postgres is
+  `postgres:5432`, not `localhost:5433`, and the service sets that itself.
+- State is kept in named volumes: `pgdata` (the database) and `flowbi_dlt` (dlt's incremental
+  watermarks). `./out` is mounted for `--destination filesystem` runs.
+
+The Cube model reads two promoted fields that a fresh database doesn't have yet: `resolution_name`,
+a column, and `analytics.fix_version`, a bridge table. Without them every chart fails with
+`relation "analytics.fix_version" does not exist`. Discover the fields, promote both, then build the
+`analytics` tables:
+
+```bash
+docker compose run --rm flowbi flowbi fields discover
+docker compose run --rm flowbi flowbi fields list --min-fill 0.1          # optional: see what was found
+docker compose run --rm flowbi flowbi fields promote "Resolution" --column resolution_name --schema-type resolution
+docker compose run --rm flowbi flowbi fields promote "Fix Version/s" --column fix_version --target bridge_table
+docker compose run --rm flowbi flowbi transform
+docker compose run --rm flowbi flowbi quality check issue_changelog --destination postgres
+```
+
+`transform` should report rows written to `analytics.issue` and the bridge table, and on a fresh
+database no "skipped (incomplete changelog)". Issues that `extract issues` loaded but
+`extract changelog` didn't reach are skipped, because the two commands walk separately; use the same
+`--limit` on both, or `--limit 0`.
+
+Check the tables:
+
+```bash
+docker exec -it open-flow-bi-postgres-1 psql -U flowbi -d openflowbi -c "\dt jira_raw.*" -c "\dt analytics.*"
+docker exec -it open-flow-bi-postgres-1 psql -U flowbi -d openflowbi -c "SELECT fields->'status'->>'name' AS status, count(*) FROM jira_raw.issues GROUP BY 1 ORDER BY 2 DESC"
+```
+
+Remember the second query's counts; the chart in step 5 should show the same numbers.
+
+### 5. Start the dashboard and build a bar chart
+
+Create the database roles Cube reads with. The reader password is read from `.env`, so it always
+matches the `CUBE_READER_PW` that Cube connects with. Pick any writer password, and reuse it on
+re-runs:
+
+```bash
+# bash
+reader=$(grep '^CUBE_READER_PW=' .env | cut -d= -f2- | tr -d '\r')
+docker exec -i open-flow-bi-postgres-1 psql -U flowbi -d openflowbi \
+  -v writer_pw=flowbi_writer_local -v reader_pw="$reader" -f - < migrations/sql/roles.sql
+docker exec -i open-flow-bi-postgres-1 psql -U flowbi -d openflowbi -f - < migrations/sql/cube_reader_grants.sql
+```
+
+```powershell
+# PowerShell
+$reader = (Select-String '^CUBE_READER_PW=(.*)' .env).Matches[0].Groups[1].Value
+Get-Content migrations/sql/roles.sql -Raw | docker exec -i open-flow-bi-postgres-1 psql -U flowbi -d openflowbi -v writer_pw=flowbi_writer_local -v reader_pw=$reader -f -
+Get-Content migrations/sql/cube_reader_grants.sql -Raw | docker exec -i open-flow-bi-postgres-1 psql -U flowbi -d openflowbi -f -
+```
+
+Both scripts should finish without `ERROR`, and both are safe to re-run. The `flowbi` service
+connects as the bootstrap superuser, so re-run them whenever a run creates new tables, such as after
+promoting another field into a bridge table, then `docker compose restart cube`. Otherwise Cube
+can't read the new tables.
+
+```bash
+docker compose up -d cube superset
+docker compose logs -f superset      # wait for the server to start, then Ctrl+C (Superset keeps running)
+```
+
+Superset's first start takes a few minutes: it installs its Postgres driver (through
+`.build-ca.pem`) and sets up its own metadata. Then go to http://localhost:8088 and log in as `admin`
+with your `SUPERSET_ADMIN_PW`:
+
+1. **Settings → Database Connections → + Database → PostgreSQL.** Fill in the form:
+
+   | Field | Value |
+   |---|---|
+   | Host | `cube` (not `localhost`: Superset reaches Cube over the compose network) |
+   | Port | `15432` |
+   | Database name | `db` |
+   | Username | `CUBE_SQL_USER` from `.env` (`superset` by default) |
+   | Password | `CUBE_SQL_PASSWORD` from `.env` |
+
+   Or click "Connect this database with a SQLAlchemy URI string instead" and enter
+   `postgresql://superset:YOUR_CUBE_SQL_PASSWORD@cube:15432/db` with the real values (URL-encode
+   `@ : / #` in the password). **Test Connection**, then **Connect**.
+2. **Datasets → + Dataset**: that database, schema `public`, table `flow`.
+3. **Charts → + Chart → Bar Chart**: X-axis `status_name`, metric `count` (aggregate MAX; `count` is
+   already a Cube measure). **Update chart**: the bars should match step 4's counts.
+4. **Save**, adding it to a new dashboard. Reload the page to confirm it persisted.
+
+If you created the `flow` dataset before a promotion, re-sync it: **Datasets → `flow` → Edit →
+Columns → Sync columns from source**. For the cycle-time and resolution charts, see the examples
+under "Dashboard: Cube + Superset" above.
+
+### Starting over
+
+```bash
+docker compose --profile tools down -v      # removes the containers and every volume of this stack
+```
+
+This deletes the database, dlt's watermarks and Superset's saved charts. Delete `pgdata` and
+`flowbi_dlt` together or not at all: an empty database with old watermarks makes `extract` skip
+every issue older than them.
+
+### Troubleshooting Docker
+
+| Symptom | Fix |
+|---|---|
+| `failed to stat ...\.build-ca.pem` | create it (step 1) |
+| `SSL: CERTIFICATE_VERIFY_FAILED` during the build or from `doctor` | `.build-ca.pem` is missing your proxy's root certificate: re-run `uv run python scripts/make_ca_bundle.py` (step 1) and check that every line says `OK`. It's mounted at runtime, so `doctor` needs no rebuild; a failed build does |
+| PowerShell: `The '<' operator is reserved for future use` | a bash command was pasted into PowerShell; use the PowerShell variant (pipe with `Get-Content ... -Raw \|`) |
+| `fields list` says "No fields found" | run `flowbi fields discover` first (step 4) |
+| `PermissionError: ... '/home/flowbi/.dlt/pipelines'` | a `flowbi_dlt` volume created by an older image: `docker volume rm open-flow-bi_flowbi_dlt`, rebuild, retry |
+| `dependency failed to start: container ... postgres-1 is unhealthy` | `docker compose logs postgres`; a first start initializes the database, so run the command again |
+| Chart: `relation "analytics.fix_version" does not exist` or `column "resolution_name" does not exist` | the promotions at the end of step 4 haven't run; run them, re-run step 5's two scripts, then `docker compose restart cube` |
+| `transform` reports many "skipped (incomplete changelog)" | see `--reset-watermark` under "Field discovery and materialization" |
+| Superset: `The password provided for username "" is incorrect` | the Username field was left blank, or the URI still contains `<...>` placeholders; enter the real `CUBE_SQL_USER`/`CUBE_SQL_PASSWORD` (step 5) |
+| Superset Test Connection fails | check `CUBE_SQL_USER`/`CUBE_SQL_PASSWORD` in `.env`, then `docker compose logs cube` |
+| Chart: `password authentication failed for user "cube_reader"` | `roles.sql` ran with a `reader_pw` other than `.env`'s `CUBE_READER_PW`. Re-run it with the right value, then `docker compose restart cube`. To test, connect over the network: `psql -h postgres -U cube_reader` inside the Postgres container. A plain `psql` there is trusted without a password, so it proves nothing |
+| Superset logs `CERTIFICATE_VERIFY_FAILED` installing `psycopg2-binary` | Superset's start-up `pip install` also uses `.build-ca.pem`: re-run the script (step 1), then `docker compose up -d --force-recreate superset` |
 
 ## For developers: adding a new field/dimension to a report
 
@@ -474,7 +758,8 @@ different questions and a status-scheme rename would silently corrupt history if
 ```
 
 (`duckdb.exe` is an optional CLI binary you place at the repo root — not a dependency. The `duckdb`
-Python package, already installed, works the same way: `uv run python -c "import duckdb; print(duckdb.sql(...))"`.)
+Python package works the same way: `uv run python -c "import duckdb; print(duckdb.sql(...))"`. It's
+a dev dependency, installed by `uv sync` but left out of the Docker image.)
 
 `fields` is a raw JSON column — pull a value out with `json_extract_string`:
 
@@ -503,4 +788,5 @@ uv run pytest -m postgres
 - A visual, browser-based field-promotion screen (the `flowbi fields` CLI above already covers
   discovering, promoting, demoting and materializing fields — this would be a UI over the same thing)
 - Row-level security, for multi-user access
-- Cloud deployment (currently local `docker-compose` only)
+- Cloud deployment. The application image exists (see "Running with Docker"); deployment manifests
+  don't yet, and the stack runs locally under `docker-compose` only

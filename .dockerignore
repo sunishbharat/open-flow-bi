@@ -1,0 +1,13 @@
+# Allowlist: the image needs only what the Dockerfile COPYs. Everything else
+# (secrets, venvs, caches, Parquet output, docs, tests, local binaries) stays out
+# of the build context.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!alembic.ini
+!migrations/
+
+**/__pycache__
+**/*.py[cod]

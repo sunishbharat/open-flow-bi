@@ -526,7 +526,7 @@ def _issue(issue_id, updated):
     return {"id": issue_id, "key": f"PROJ-{issue_id}", "fields": {"updated": updated}}
 
 
-def _run_returning(tmp_path, rows, jqls=None):
+def _run_returning(tmp_path, rows, jqls=None, **run_kwargs):
     """One real pipeline run whose search returns exactly `rows`, ignoring the
     JQL floor, so dlt's own incremental filter is the thing under test."""
 
@@ -544,6 +544,7 @@ def _run_returning(tmp_path, rows, jqls=None):
             project="PROJ",
             out_dir=tmp_path / "out",
             pipelines_dir=str(tmp_path / ".dlt"),
+            **run_kwargs,
         )
 
 
@@ -577,6 +578,35 @@ def test_late_indexed_issue_inside_the_overlap_window_still_loads(tmp_path):
     # The JQL floor is lowered by the same hour, not only dlt's filter.
     assert 'updated >= "2024-01-01 09:00"' in jqls[0]
     assert _loaded_issue_ids(tmp_path / "out") == ["1", "2"]
+
+
+def test_reset_watermark_re_walks_from_the_incremental_start(tmp_path):
+    """`flowbi extract changelog --reset-watermark`: an issue older than the
+    watermark (and its 1-hour lag) is filtered out by a normal run, and loads
+    once the watermark is reset. The JQL floor drops back to the start too."""
+    _run_returning(tmp_path, [_issue("1", "2024-01-01T10:00:00.000+0000")])
+    old = [_issue("0", "2024-01-01T08:00:00.000+0000")]
+
+    jqls: list[str] = []
+    _run_returning(tmp_path, old, jqls)
+    assert 'updated >= "2024-01-01 09:00"' in jqls[0]
+    assert _loaded_issue_ids(tmp_path / "out") == ["1"]
+
+    jqls.clear()
+    _run_returning(tmp_path, old, jqls, reset_watermark=True)
+    assert 'updated >= "2024-01-01' not in jqls[0]
+    assert _loaded_issue_ids(tmp_path / "out") == ["0", "1"]
+
+
+def test_reset_watermark_only_touches_the_resources_being_run(tmp_path):
+    _run_returning(tmp_path, [_issue("1", "2024-01-01T10:00:00.000+0000")])
+    name = pipeline_run.pipeline_name(FAKE_PROFILE.instance_id, "PROJ")
+    pipeline = dlt.attach(pipeline_name=name, pipelines_dir=str(tmp_path / ".dlt"))
+
+    pipeline_run._reset_watermarks(pipeline, ("issue_changelog",))
+
+    resources = pipeline.state["sources"]["jira"]["resources"]
+    assert "incremental" in resources["issues"]
 
 
 def test_a_cursor_stored_as_a_string_before_the_fix_is_migrated(tmp_path):

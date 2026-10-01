@@ -227,7 +227,18 @@ def extract_issues(limit: LimitOption = 20, destination: DestinationOption = "fi
 
 @extract_app.command("changelog")
 def extract_changelog(
-    limit: LimitOption = 20, destination: DestinationOption = "filesystem"
+    limit: LimitOption = 20,
+    destination: DestinationOption = "filesystem",
+    reset_watermark: Annotated[
+        bool,
+        typer.Option(
+            "--reset-watermark",
+            help="Forget the changelog watermark and re-walk from the start. Backfills "
+            "changelog completeness for issues extracted before it was recorded, which "
+            "`transform` otherwise skips. Combine with --limit to backfill in chunks: "
+            "only the first run resets, later runs without the flag continue from there.",
+        ),
+    ] = False,
 ) -> None:
     """Extract issue changelogs (3-tier: expand -> bulkfetch -> per-issue)."""
     settings = Settings()  # type: ignore[call-arg]  # required fields resolved from env at runtime
@@ -239,6 +250,7 @@ def extract_changelog(
         resources=("issue_changelog",),
         destination=destination,
         postgres_dsn=settings.postgres_dsn,
+        reset_watermark=reset_watermark,
     )
     console.print(info)
 
