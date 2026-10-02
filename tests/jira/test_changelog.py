@@ -67,7 +67,7 @@ def test_fetch_bulk_cloud():
 
 @pytest.mark.vcr
 def test_fetch_bulk_follows_next_page_token_cloud():
-    # Architecture review finding 5: bulkfetch pages its histories. An issue
+    # bulkfetch pages its histories. An issue
     # split across two pages must come back with both halves, in order.
     result = changelog.fetch_bulk("https://example.atlassian.net", None, ["10001", "10002"])
     assert [h["id"] for h in result["10001"]] == ["9001", "9002"]
@@ -182,7 +182,7 @@ def test_fetch_orchestration_cloud_tries_bulk_before_per_issue():
 
 
 def test_fetch_yields_in_search_order_with_fallback_tiers_resolved_per_page():
-    # Architecture review finding 6: the fallback tiers used to run only after the whole walk,
+    # The fallback tiers used to run only after the whole walk,
     # so a limit could stop the walk after later, tier-1-complete issues had advanced the
     # watermark, and the deferred, earlier-updated issue was never fetched.
     pulled: list[str] = []

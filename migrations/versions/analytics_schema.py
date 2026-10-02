@@ -4,12 +4,11 @@ Revision ID: c44c33c8584c
 Revises: 948acc1618ac
 Create Date: 2026-09-20 21:39:48.147478
 
-Creates the empty `analytics` schema (docs/phase2-postgres-design.md §3: "Alembic
-owns. EMPTY in Phase 2. Phase 3 fills it."). Alembic-owned, not dlt's — belongs
-here rather than as a hand-run psql command so a fresh database (CI, a new
-dev's docker-compose) gets it from `alembic upgrade head` alone, and so
-`migrations/sql/roles.sql`'s `GRANT ... ON SCHEMA analytics TO cube_reader`
-has something to grant on regardless of whether Phase 3 has landed yet.
+Creates the empty `analytics` schema, which `flowbi transform` fills.
+Alembic-owned, not dlt's — belongs here rather than as a hand-run psql command
+so a fresh database (CI, a new dev's docker-compose) gets it from
+`alembic upgrade head` alone, and so `migrations/sql/roles.sql`'s `GRANT ... ON SCHEMA analytics TO cube_reader`
+has something to grant on before any transform has run.
 """
 
 from collections.abc import Sequence

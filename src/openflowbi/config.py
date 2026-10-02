@@ -1,8 +1,7 @@
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Epoch: an unset incremental start means "extract everything" on first run,
-# same as M3/M4's plain full pass.
+# Epoch: an unset incremental start means "extract everything" on the first run.
 DEFAULT_INCREMENTAL_START = "1970-01-01T00:00:00.000+0000"
 
 
@@ -27,12 +26,12 @@ class Settings(BaseSettings):
     jira_client_cert_b64: str | None = None
     jira_client_key_b64: str | None = None
     jira_project: str | None = None
-    # Phase 2 (docs/phase2-postgres-design.md §7): stable slug, part of every
+    # Stable slug identifying this Jira, part of every
     # Postgres primary key. Optional — deployment.derive_instance_id() falls
     # back to a slug of the base URL's host when unset.
     jira_instance_id: str | None = None
     jira_incremental_start: str = DEFAULT_INCREMENTAL_START
-    # Phase 2 (docs/phase2-postgres-design.md §4.4): the single user-facing
+    # The single user-facing
     # surface for the Postgres DSN, handed to dlt explicitly rather than
     # letting dlt's own secrets.toml resolution be a second source of truth.
     postgres_dsn: str | None = None

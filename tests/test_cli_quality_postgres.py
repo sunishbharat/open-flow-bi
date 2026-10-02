@@ -1,4 +1,4 @@
-"""M7.6 acceptance proof, literally (docs/phase2-postgres-design.md §14):
+"""End-to-end proof of the Postgres quality gate:
 "A seeded duplicate makes `flowbi quality check --destination postgres` exit
 1 and write `status='quality_failed'`." Ties together quality/sql_checks.py,
 ops/sync_run.py and cli.py's `quality check --destination postgres` path.
@@ -41,12 +41,12 @@ def postgres_dsn() -> Iterator[str]:
         engine = sa.create_engine(dsn)
         with engine.begin() as conn:
             # flowbi_ops for sync_run — bypasses Alembic like the other
-            # Postgres-backed tests (M7.3's own tests cover migration history).
+            # Postgres-backed tests (migration history is tested separately).
             conn.execute(sa.text("CREATE SCHEMA IF NOT EXISTS flowbi_ops"))
         ops_metadata.create_all(engine)
         with engine.begin() as conn:
             # Minimal jira_raw shape, hand-written only for this throwaway
-            # fixture — dlt still owns the real schema (§3).
+            # fixture — dlt still owns the real schema.
             conn.execute(sa.text("CREATE SCHEMA IF NOT EXISTS jira_raw"))
             conn.execute(
                 sa.text("CREATE TABLE jira_raw.issues (instance_id text, issue_id bigint)")

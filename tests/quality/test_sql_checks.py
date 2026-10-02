@@ -1,7 +1,7 @@
-"""M7.6 acceptance proof (docs/phase2-postgres-design.md §9/§14): SQL
+"""SQL
 invariants that pandera-on-a-sample can't check ("is this unique across the
 whole table") run against real Postgres and return non-zero for exactly the
-kind of duplicate that Phase 1's pandera-on-Parquet check already caught, but
+kind of duplicate that the pandera-on-Parquet check already catches, but
 that the filesystem destination's merge->append downgrade let accumulate.
 
 Needs Docker; excluded from the default `pytest` run (see the `postgres`
@@ -27,9 +27,9 @@ def postgres_dsn() -> Iterator[str]:
         engine = sa.create_engine(dsn)
         with engine.begin() as conn:
             # Minimal jira_raw shape — just the columns the SQL checks
-            # touch. Real columns come from dlt (§3); hand-writing DDL here
+            # touch. Real columns come from dlt; hand-writing DDL here
             # only for a throwaway test fixture is not the "never hand-write
-            # DDL for jira_raw" rule (§3) — that rule is about the real
+            # DDL for jira_raw" rule — that rule is about the real
             # pipeline, dlt still owns the schema there.
             conn.execute(sa.text("CREATE SCHEMA IF NOT EXISTS jira_raw"))
             conn.execute(
@@ -104,7 +104,7 @@ def test_issues_pk_unique_passes_on_clean_data(postgres_dsn: str, clean_tables: 
 def test_issues_pk_unique_fails_on_seeded_duplicate(postgres_dsn: str, clean_tables: None) -> None:
     # issue_id is the only identity — never duplicated
     # within an instance. Postgres is where `merge` actually enforces this
-    # (§1) — this seeds the exact failure a filesystem destination silently
+    # — this seeds the exact failure a filesystem destination silently
     # allows to accumulate.
     _insert_issues(postgres_dsn, [("inst-a", 1), ("inst-a", 1)])
     result = sql_checks.run_checks(postgres_dsn, "issues")
@@ -128,7 +128,7 @@ def test_changelog_pk_unique_fails_on_seeded_duplicate(
 def test_no_orphan_changelog_flags_a_changelog_row_with_no_matching_issue(
     postgres_dsn: str, clean_tables: None
 ) -> None:
-    # §9's documented scoping decision: whole-table, so a changelog row with
+    # The check is whole-table, so a changelog row with
     # no matching `issues` row (e.g. `extract changelog` run before `extract
     # issues`) is correctly flagged, not silently ignored.
     _insert_changelog(postgres_dsn, [("inst-a", 99, "h1", 0)])
@@ -139,7 +139,7 @@ def test_no_orphan_changelog_flags_a_changelog_row_with_no_matching_issue(
 
 def test_alerting_checks_never_fail_the_gate(postgres_dsn: str, clean_tables: None) -> None:
     # Completeness is per issue, in issue_changelog_status: an incomplete
-    # issue usually has no item rows at all (architecture review finding 4).
+    # issue usually has no item rows at all.
     _insert_issues(postgres_dsn, [("inst-a", 1), ("inst-a", 2)])
     engine = sa.create_engine(postgres_dsn)
     with engine.begin() as conn:

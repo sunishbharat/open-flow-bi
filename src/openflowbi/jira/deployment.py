@@ -45,7 +45,7 @@ def derive_instance_id(base_url: str) -> str:
     """Derive a stable, human-readable instance_id slug from a base URL's host.
 
     Pure — no network, unit-testable directly. Used as the default when
-    FLOWBI_JIRA_INSTANCE_ID isn't set (docs/phase2-postgres-design.md §7),
+    FLOWBI_JIRA_INSTANCE_ID isn't set,
     e.g. https://issues.apache.org/jira -> issues-apache-org. instance_id
     becomes part of every Postgres primary key, so it is derived from the
     host alone — stable across a re-run even if the path or scheme changes.

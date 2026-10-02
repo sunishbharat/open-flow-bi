@@ -4,11 +4,11 @@ Revision ID: 948acc1618ac
 Revises:
 Create Date: 2026-09-20 13:53:47.480586
 
-Creates flowbi_ops and its four control-plane tables
-(docs/phase2-postgres-design.md §8). The schema is created here, in the same
-transaction as the tables and before Alembic's own version-table write, since
-version_table_schema="flowbi_ops" (migrations/env.py) needs the schema to
-already exist by the time Alembic stamps this revision.
+Creates flowbi_ops and its four control-plane tables. The schema is created
+here, in the same transaction as the tables and before Alembic's own
+version-table write, since version_table_schema="flowbi_ops"
+(migrations/env.py) needs the schema to already exist by the time Alembic
+stamps this revision.
 
 Column shapes here must match src/openflowbi/ops/tables.py exactly (that
 module is migrations/env.py's target_metadata) — a mismatch is exactly what

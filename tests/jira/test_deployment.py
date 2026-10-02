@@ -19,7 +19,7 @@ def test_detect_dc():
     assert profile.is_cloud is False
     assert profile.base_url == APACHE_JIRA
     assert profile.version
-    # Default instance_id, derived from the host (M7.2: no FLOWBI_JIRA_INSTANCE_ID set).
+    # Default instance_id, derived from the host (no FLOWBI_JIRA_INSTANCE_ID set).
     assert profile.instance_id == "issues-apache-org"
 
 
@@ -109,7 +109,7 @@ def test_jql_updated_floor_converts_across_offsets():
 
 
 def test_jql_updated_floor_accepts_the_datetime_cursor():
-    # The incremental cursor is an aware datetime (architecture review finding 1).
+    # The incremental cursor is an aware datetime.
     cursor = pendulum.datetime(2024, 1, 15, 9, 30, 45)
     assert deployment.jql_updated_floor(cursor, "America/New_York") == "2024-01-15 04:30"
 

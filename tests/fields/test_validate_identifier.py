@@ -64,7 +64,7 @@ def test_validate_field_id_rejects_unsafe_values(field_id: str) -> None:
         validate_field_id(field_id)
 
 
-# Architecture review finding 13: a syntactically fine name can still be one
+# A syntactically fine name can still be one
 # the runner's idempotent DDL silently reuses. Rejected in save_selection's
 # validation, before any database access, so no Postgres is needed here.
 @pytest.mark.parametrize(

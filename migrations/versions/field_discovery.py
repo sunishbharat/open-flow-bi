@@ -4,7 +4,7 @@ Revision ID: b4a3b4638006
 Revises: c44c33c8584c
 Create Date: 2026-09-21 10:42:48.900068
 
-Phase 3a.1 (docs/phase3-field-selection-design.md §2.1): field_definition
+field_definition
 ("what exists", refreshed every run from /field) and field_stats ("what we
 measured", recomputed by `flowbi fields discover`). Column shapes here must
 match src/openflowbi/ops/tables.py exactly (that module is

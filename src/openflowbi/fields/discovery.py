@@ -1,6 +1,6 @@
 """Discover Jira field definitions and compute fill-rate stats from Postgres.
 
-docs/phase3-field-selection-design.md §2.1 / Phase 3a.1. Two independent
+Two independent
 writes, both idempotent (safe to re-run `flowbi fields discover` any time):
 
 1. `refresh_field_definitions` — GET /field, upsert into flowbi_ops.field_definition.
@@ -108,7 +108,7 @@ def compute_field_stats(
     """Sample jira_raw.issues.fields and recompute flowbi_ops.field_stats.
 
     Reads jira_raw (dlt-owned) but never writes to it — a SELECT is not the
-    change P2-D1 forbids. Only recomputes stats for field_ids already in
+    change dlt's ownership forbids. Only recomputes stats for field_ids already in
     field_definition, so call refresh_field_definitions first. Returns
     (fields_with_stats, sampled_issues).
     """
@@ -165,7 +165,7 @@ def _field_stats_row(instance_id: str, field_id: str, sampled: list[dict]) -> di
     sampled_count = len(sampled)
     non_null = 0
     distinct_keys: set[str] = set()  # full count — every distinct value seen
-    samples: list[object] = []  # capped preview, §2.1: "up to 10, for the preview"
+    samples: list[object] = []  # capped preview: up to 10 values
     projects_with_value: set[str] = set()
 
     for issue_fields in sampled:

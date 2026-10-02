@@ -1,7 +1,7 @@
 -- Rebuilds analytics.issue_status_interval rows for :instance_id, scoped to
 -- :issue_ids (a bigint[]) or every issue when :issue_ids IS NULL — "a full
--- rebuild is the same SQL with the id set replaced by all"
--- (docs/phase3-field-selection-design.md §4). The caller (runner.py) deletes
+-- rebuild is the same SQL with the id set replaced by all", so there's one
+-- code path to debug. The caller (runner.py) deletes
 -- any existing rows for the same scope first, in the same transaction.
 --
 -- seq=0 is always seeded from jira_raw.issues.created_at: the changelog only

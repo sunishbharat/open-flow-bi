@@ -1,6 +1,5 @@
-"""Phase 3a.1: service.list_fields() is the join+filter the CLI's `fields list`
-command (and, later, a 3b UI screen) both call (docs/phase3-field-selection-design.md
-§3: "write this once, call it twice"). Needs real Postgres - excluded from
+"""service.list_fields() is the join+filter behind the CLI's `fields list`
+command, written once so a future UI can call it too. Needs real Postgres - excluded from
 the default run, same pattern as the rest of the `postgres`-marked suite.
 """
 

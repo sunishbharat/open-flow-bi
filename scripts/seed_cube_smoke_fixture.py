@@ -1,11 +1,11 @@
-"""Fixture loader for the M9a.3 cube CI smoke job.
+"""Fixture loader for the cube-smoke CI job.
 
 Loads a handful of synthetic issues straight into jira_raw.issues via the
 real pipeline.run(..., destination="postgres") path - the same code
 `flowbi extract issues` uses - with Jira HTTP mocked at the _search_pages
-boundary. That's the same pattern tests/pipeline/test_concurrency.py (M7.4)
-uses, required by the M6 finding that cassette-based HTTP mocking must never
-touch a dlt-wrapped resource directly (dlt worker-thread teardown races
+boundary. That's the same pattern tests/pipeline/test_concurrency.py uses,
+because cassette-based HTTP mocking must never touch a dlt-wrapped resource
+directly (dlt worker-thread teardown races
 vcrpy's cassette patching). Run by .github/workflows/ci.yml's cube-smoke
 job, not by pytest - the Cube container this feeds lives entirely outside
 the pytest process.
@@ -37,7 +37,7 @@ PROFILE = DeploymentProfile(
 # project_key -> {status_name: count}. Small and hand-countable so
 # scripts/query_cube_smoke.py can assert an exact total, not just "some
 # rows came back" - the fixture's own numbers are the only "real" values in
-# play (open-flow-bi-repo-structure_1.md §4: "asserts shape, not values").
+# play: the job asserts shape, not production values.
 FIXTURE: dict[str, dict[str, int]] = {
     "ALPHA": {"To Do": 2, "In Progress": 1, "Done": 3},
     "BETA": {"To Do": 1, "Done": 2},

@@ -1,4 +1,4 @@
-"""Server/DC /search offset walk while issues change under it (architecture review finding 3).
+"""Server/DC /search offset walk while issues change under it.
 
 The walk is sorted `updated asc`. Editing an issue already read moves it to the end, so every
 later row shifts left by one and a plain offset walk skips the row at the next page boundary.

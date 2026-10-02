@@ -4,7 +4,7 @@ Revision ID: d1f2a4c9e001
 Revises: 8ac3badd15cb
 Create Date: 2026-09-21 14:00:00.000000
 
-Phase 3a.3 (docs/phase3-field-selection-design.md §2.3, §4). One row per
+One row per
 (issue, status period), seq=0 always seeded from jira_raw.issues.created_at —
 the changelog only records transitions, never the initial state. Rebuilt
 wholesale (delete+reinsert per affected issue) by

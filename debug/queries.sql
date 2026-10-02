@@ -40,8 +40,8 @@ GROUP BY _dlt_load_id
 ORDER BY _dlt_load_id DESC;
 
 -- Field discovery: every top-level `fields` key present on one issue, one per
--- row (fields is a passthrough JSON column — see M4 notes in
--- pipeline/source.py on why it isn't exploded into child tables). Custom
+-- row (fields is a passthrough JSON column — see max_table_nesting=0 in
+-- pipeline/source.py for why it isn't exploded into child tables). Custom
 -- field ids (customfield_NNNNN) are per-instance — the rule is "map by
 -- (name, schema type), never hard-code an id" — so treat these as
 -- discovery-only, not stable identifiers to hard-code elsewhere.

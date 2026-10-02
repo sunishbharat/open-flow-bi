@@ -2,25 +2,18 @@ cubes:
   - name: issue
     sql_table: analytics.issue
 
-    # Second half of the M9b full path (docs/phase4-cube-dashboard-design.md
-    # §4.3/§4.4; docs/phase3-field-selection-design.md §2.3) — exposes
-    # analytics.issue (Phase 3a.4's promoted-column wide table), the gap
-    # documented in README.md's "For developers" section as "no cube reads
-    # analytics.issue yet". Joined from issues.yml, not declared here, for
-    # the same reason issue_status_interval.yml's join moved there (see that
-    # cube's own comment) — the flow view's join_path direction has to match
-    # wherever the join edge is declared, or Cube's SQL API fails with
-    # "Can't find join path" the moment a query selects only this cube's
-    # members.
+    # Exposes analytics.issue, the wide table with one column per promoted
+    # field. Joined from issues.yml, not declared here, for the same reason
+    # issue_status_interval.yml's join moved there (see that cube's own
+    # comment) — the flow view's join_path direction has to match wherever the
+    # join edge is declared, or Cube's SQL API fails with "Can't find join
+    # path" the moment a query selects only this cube's members.
     #
     # Add one dimension per promoted column as fields get promoted — a
     # one-line change, same as a Path B JSON-extraction dimension in
-    # issues.yml. resolution_name below is the first real example: promoted
-    # 2026-09-22 (`flowbi fields promote "Resolution" --column
-    # resolution_name --schema-type resolution` + `flowbi transform
-    # --rebuild-all`), real spread across 9910 issues (Fixed 5960, NULL
-    # (unresolved) 2050, Duplicate 701, Won't Fix 346, ... 21 distinct
-    # values), verified via `psql` against the real docker-compose Postgres.
+    # issues.yml. resolution_name below is the reference: promoted with
+    # `flowbi fields promote "Resolution" --column resolution_name
+    # --schema-type resolution`, then `flowbi transform`.
 
     dimensions:
       - name: issue_ref
@@ -33,12 +26,11 @@ cubes:
         primary_key: true
 
       - name: issue_id
-        # Declared as a real, named dimension (not just folded into
-        # issue_ref above) so issues.yml's join can reference it by member
-        # name — found live (issue_status_interval.yml) that a join's sql
-        # can reach {CUBE}.col on its own declaring side with no dimension
-        # required, but referencing the *other* side that way needs an
-        # actual declared member, or Cube fails with "... cannot be
+        # Declared as a real, named dimension (not just folded into issue_ref
+        # above) so issues.yml's join can reference it by member name: a
+        # join's sql can reach {CUBE}.col on its own declaring side with no
+        # dimension required, but referencing the *other* side that way needs
+        # an actual declared member, or Cube fails with "... cannot be
         # resolved. There's no such member or cube."
         sql: issue_id
         type: number

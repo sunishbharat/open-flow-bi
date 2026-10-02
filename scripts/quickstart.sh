@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # OpenFlowBI quickstart: from a fresh clone to a running dashboard.
 #
-# Automates README "Running with Docker": writes .env, creates the CA bundle, gets the
+# Automates docs/docker.md: writes .env, creates the CA bundle, gets the
 # openflowbi/core image (uses one already here, downloads a prebuilt one, or builds it),
 # starts Postgres, loads Jira data, promotes the two fields the Cube model reads, applies the
 # database roles, then starts Cube and Superset.
@@ -640,8 +640,8 @@ if [[ -s $CA_FILE ]]; then
     note "If certificate errors appear later, delete it and run the script again."
 elif command -v uv > /dev/null; then
     task "Build $CA_FILE and test it" uv run python scripts/make_ca_bundle.py --out "$CA_FILE" \
-        || die "The certificate check failed: see the FAILED line above, and README
-'Running with Docker', step 1."
+        || die "The certificate check failed: see the FAILED line above, and docs/docker.md,
+step 1."
 else
     # shellcheck disable=SC2016 # $1 is expanded by the inner bash, on purpose
     task "Copy the public certificates" \

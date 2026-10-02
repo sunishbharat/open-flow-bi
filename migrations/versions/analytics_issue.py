@@ -4,7 +4,7 @@ Revision ID: e2a3b5d0f102
 Revises: d1f2a4c9e001
 Create Date: 2026-09-21 14:05:00.000000
 
-Phase 3a.4 (docs/phase3-field-selection-design.md §2.3). Fixed base columns
+Fixed base columns
 only — the wide table's promoted columns (story_points, business_unit, ...)
 are added by `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` at rebuild time
 (src/openflowbi/transform/runner.py), driven by the live field_selection, not

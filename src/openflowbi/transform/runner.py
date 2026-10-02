@@ -1,4 +1,4 @@
-"""Phase 3a.3-3a.6 transform runner (docs/phase3-field-selection-design.md §4).
+"""The transform runner behind `flowbi transform`.
 
 Two independent things, both driven by `flowbi transform`:
 
@@ -11,7 +11,7 @@ Two independent things, both driven by `flowbi transform`:
    nothing to do with new Jira data, so it only touches promoted columns,
    never intervals.
 
-SQLAlchemy Core throughout (library decision register), no ORM.
+SQLAlchemy Core throughout, no ORM.
 """
 
 from __future__ import annotations
@@ -98,8 +98,7 @@ def partition_incomplete(
     the issue's `updated_at`). Anything else is incomplete: no status row
     (changelog never extracted), a partial extraction, or one older than the
     issue. Building intervals from those would seed seq=0 with the current
-    status and produce a plausible, wrong time-in-status (design D4,
-    architecture review finding 4). Skipped issues keep their previous
+    status and produce a plausible, wrong time-in-status. Skipped issues keep their previous
     intervals and are re-marked dirty the next time `extract changelog`
     touches them, so nothing is lost, only delayed.
     """
@@ -181,7 +180,7 @@ def _extract_expr(field_id: str, schema_type: str) -> str:
     Typed fields cast only values Postgres accepts, anything else becomes
     NULL. A hard cast let one malformed value abort the transaction that
     claimed issue_dirty, so every later run hit the same row and analytics
-    stopped updating (architecture review finding 14). _count_invalid
+    stopped updating. _count_invalid
     reports what was dropped. pg_input_is_valid needs Postgres 16+.
     """
     cast_type = _CAST_TYPE_BY_SCHEMA_TYPE.get(schema_type)
@@ -248,7 +247,7 @@ def rebuild_issue_columns(
     selection: dict[tuple[str, str], SelectionRow],
 ) -> tuple[int, int]:
     """Upsert analytics.issue's fixed columns, then add/populate whatever's
-    currently promoted (§4 step 4). Returns (issue_rows, bridge_rows).
+    currently promoted. Returns (issue_rows, bridge_rows).
     """
     if issue_ids is not None and not issue_ids:
         return 0, 0
@@ -273,7 +272,7 @@ def rebuild_issue_columns(
         if existing is not None and existing != _DATA_TYPE_BY_SQL_TYPE[col_type]:
             # The field was re-promoted with another type under the same
             # column name. Writing it would fail the whole transaction on
-            # every run (finding 14), so leave the column as it is.
+            # every run, so leave the column as it is.
             logger.warning(
                 "promoted_column_type_mismatch",
                 column=row.column_name,
@@ -360,8 +359,7 @@ def run_transform(
     """The top-level entry point behind `flowbi transform`. Always drains
     flowbi_ops.rebuild_request afterwards, incremental pass or not.
 
-    Holds the transform lock throughout, so overlapping runs take turns
-    (architecture review finding 15).
+    Holds the transform lock throughout, so overlapping runs take turns.
     """
     with transform_lock(dsn):
         result = _transform(dsn, instance_id, rebuild_all=rebuild_all, project=project)
@@ -430,7 +428,7 @@ def drain_rebuild_queue(dsn: str, instance_id: str) -> list[RebuildOutcome]:
 def _drain_rebuild_queue(dsn: str, instance_id: str) -> list[RebuildOutcome]:
     """Caller holds the transform lock. That makes the stale-`running` sweep
     safe: no other drain can be running, so a `running` row is one a crashed
-    run left behind, and would otherwise stay stuck forever (finding 15).
+    run left behind, and would otherwise stay stuck forever.
     """
     engine = sa.create_engine(dsn)
     try:

@@ -1,4 +1,4 @@
-"""Write flowbi_ops.sync_run rows (docs/phase2-postgres-design.md §8).
+"""Write flowbi_ops.sync_run rows: one per quality-check run, with its verdict.
 
 Deliberately thin control-plane bookkeeping, not one of the "write only
 these" product pieces under the library-first rule — one INSERT via

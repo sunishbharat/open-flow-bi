@@ -1,6 +1,12 @@
-# Markdown - ignore all, keep only README and tracked runtime assets
+# Secrets and machine-specific files (also covered by the dotfile rule below,
+# listed explicitly so they stay ignored if that rule ever changes)
 docs/
 *.md
+.env
+*.pem
+*.log
+
+# Local binaries (e.g. an optional duckdb.exe at the repo root)
 *.exe
 !README.md
 
@@ -10,27 +16,26 @@ __pycache__/
 *.egg-info/
 htmlcov/
 
-# TOML - ignore all except pyproject.toml
+# TOML - ignore all except pyproject.toml (dlt's local secrets.toml/config.toml
+# can hold credentials)
 *.toml
 !pyproject.toml
 
-# Ignore all dotfiles and dot-directories by default
+# Ignore all dotfiles and dot-directories by default: .venv, tool caches
+# (.pytest_cache, .mypy_cache, .ruff_cache), dlt state (.dlt), Cube Store data
+# (cube/.cubestore)
 .*
 !.gitignore
 !.env.example
 !.github/
 !.dockerignore
 !.gitattributes
-!CONTRIBUTING.md
 !.python-version
 
-# Runtime data (learned conventions, caches, session-sharded convention files)
+# Runtime data
 data/
-data/conventions/
 
-# Pipeline runtime artifacts (dlt filesystem/DuckDB output, local secrets)
+# Pipeline runtime artifacts (dlt filesystem/DuckDB output)
 out/
 *.duckdb
 *.duckdb.wal
-
-

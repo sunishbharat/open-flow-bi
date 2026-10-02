@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1
 #
-# openflowbi/core - one image, many commands (docs/deployment-cf.md §2.1, §3).
+# openflowbi/core - one image, many commands.
 # Wheels only: every third-party package installs from a prebuilt wheel, nothing
 # is compiled, so the builder needs no gcc/headers and the runtime stage is just
 # python:slim + a virtualenv.
 #
-# Build (behind Norton/corporate TLS interception, pass the CA bundle as a secret -
+# Build (behind antivirus or a proxy that inspects HTTPS, pass the CA bundle as a secret -
 # never COPY it, or it lands in an image layer):
 #   docker build --platform linux/amd64 --secret id=ca,src=<combined-ca-bundle.pem> -t openflowbi/core:dev .
 # Build (no interception, e.g. CI):
@@ -17,7 +17,7 @@ ARG PYTHON_IMAGE=python:3.12-slim-bookworm
 FROM ${PYTHON_IMAGE} AS builder
 
 # Docker Hub mirror of ghcr.io/astral-sh/uv (same image) - a stale ghcr.io login
-# in Docker Desktop's credential store makes ghcr pulls fail with "denied".
+# in a Docker credential store can make ghcr pulls fail with "denied".
 COPY --from=docker.io/astral/uv:0.9.10 /uv /bin/uv
 
 # No bytecode compilation: keeps the image smaller, at the cost of a slightly
@@ -79,7 +79,7 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 
 USER 1000
 
-# No ENTRYPOINT - every run supplies its own command (docs/deployment-cf.md §2.1):
+# No ENTRYPOINT - every run supplies its own command:
 #   flowbi extract issues --destination postgres
 #   alembic upgrade head
 CMD ["flowbi", "--help"]

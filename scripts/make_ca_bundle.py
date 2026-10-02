@@ -2,10 +2,10 @@
 CAs plus every root this machine's operating system trusts.
 
 Anything that re-signs HTTPS (a corporate proxy, Zscaler, antivirus TLS
-scanning such as Norton's) installs its root into the OS trust store, so this
+scanning) installs its root into the OS trust store, so this
 picks it up without anyone having to know which product it is or where its
 certificate file lives. Containers can't see the host's trust store; this
-file is how they get it (see README "Running with Docker", step 1).
+file is how they get it (see docs/docker.md, step 1).
 
     uv run python scripts/make_ca_bundle.py            # writes .build-ca.pem, then checks it
     uv run python scripts/make_ca_bundle.py --out x.pem --check-host pypi.org

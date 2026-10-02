@@ -1,17 +1,16 @@
 """Populate flowbi_ops.issue_dirty from a completed Postgres load.
 
-docs/phase2-postgres-design.md §8: "issue_dirty is populated in Phase 2 (from
-the issue ids in each load package, read off load_info) even though nothing
-consumes it until Phase 3." dlt's `LoadInfo` carries load ids and per-table
+Incremental `flowbi transform` rebuilds exactly the issues queued here, from
+the issue ids in each load package. dlt's `LoadInfo` carries load ids and per-table
 job metadata, but no row-level primary keys — there is no public dlt API to
 read "which issue_ids did this load touch" directly off it. The practical
-reading of "off load_info" is therefore: use `LoadInfo.loads_ids` to read
+reading is therefore: use `LoadInfo.loads_ids` to read
 back, from the `jira_raw` table dlt just wrote to, exactly the rows stamped
 with those load ids (`_dlt_load_id`) — which, under merge write disposition,
 is exactly the set of rows this run actually loaded (existing untouched rows
 keep their older `_dlt_load_id` and are correctly excluded).
 
-SQLAlchemy Core, not the ORM (library decision register) — arrives
+SQLAlchemy Core, not the ORM — arrives
 free with Alembic, no new dependency.
 """
 
@@ -57,8 +56,8 @@ def mark_dirty(dsn: str, instance_id: str, table: str, load_ids: list[str], reas
 
     `table` is always one of DIRTY_TABLES' values (our own constants, never
     user input), so building the identifier by f-string is safe here — dlt
-    owns `jira_raw` and this only ever reads from it (P2-D1: "if dlt created
-    it, only dlt changes it" — a SELECT is not a change).
+    owns `jira_raw` and this only ever reads from it ("if dlt created it,
+    only dlt changes it" — a SELECT is not a change).
     """
     if not load_ids:
         return 0

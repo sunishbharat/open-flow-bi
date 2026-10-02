@@ -1,4 +1,4 @@
-"""Architecture review finding 12: the whole pipeline runs as `flowbi_writer`.
+"""The whole pipeline runs as `flowbi_writer`.
 
 `migrations/sql/roles.sql` used to grant schema-level CREATE/USAGE only. The tables Alembic and a
 first extraction had already created as the bootstrap superuser stayed out of reach: no DML on

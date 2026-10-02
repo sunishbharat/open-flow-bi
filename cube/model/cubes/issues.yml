@@ -2,21 +2,19 @@ cubes:
   - name: issues
     sql_table: jira_raw.issues
 
-    # Fast path (docs/phase4-cube-dashboard-design.md §2, §4.2): reads
-    # jira_raw directly via cube_reader's read-only grant on this one table
-    # (§6 of that doc). No Phase 3 dependency. Every cube needs a
-    # primary_key or a later one-to-many join silently inflates counts
-    # (open-flow-bi-repo-structure_1.md §4's modeling rule).
+    # Reads jira_raw directly via cube_reader's read-only grant on this table
+    # (migrations/sql/cube_reader_grants.sql), so it works before any field
+    # is promoted. Every cube needs a primary_key or a one-to-many join
+    # silently inflates counts (cube/README.md's modeling rules).
     #
     # The join to issue_status_interval is declared HERE, not on that cube,
-    # even though issue_status_interval is the "many" side - found live that
-    # Cube's SQL API join-graph builder needs the edge declared in the same
-    # direction as the flow view's `join_path: issues.issue_status_interval`
-    # (§4.4 below), or it fails with "Can't find join path to join
-    # 'issues,issue_status_interval'" the moment a query selects only
-    # issue_status_interval-side members - even though the same join
-    # resolves fine when issue_status_interval is queried on its own,
-    # outside the view.
+    # even though issue_status_interval is the "many" side: Cube's SQL API
+    # join-graph builder needs the edge declared in the same direction as the
+    # flow view's `join_path: issues.issue_status_interval`
+    # (cube/model/views/flow.yml), or it fails with "Can't find join path to
+    # join 'issues,issue_status_interval'" the moment a query selects only
+    # issue_status_interval-side members - even though the same join resolves
+    # fine when issue_status_interval is queried on its own, outside the view.
     joins:
       - name: issue_status_interval
         relationship: one_to_many
@@ -52,18 +50,17 @@ cubes:
 
       - name: project_key
         # jira_raw.fields is jsonb passthrough (raw JSON by design) — extracted
-        # here, not promoted to a column, per phase3-field-selection-design.md
-        # §1A: a dimension can read JSON directly without a promotion engine.
+        # here, not promoted to a column: a dimension can read JSON directly
+        # without the promotion engine.
         sql: "{CUBE}.fields->'project'->>'key'"
         type: string
 
       - name: status_name
-        # Fast-path-only choice: grouped by display string, not status id,
-        # because the fast path has no status-id lookup table. A status
-        # rename will retroactively change historical grouping — acceptable
-        # for a first dashboard, called out here and in phase4's open
-        # question #1 so it isn't mistaken for an oversight. Fixed when the
-        # full-path issue_status_interval cube (Phase 3a output) lands.
+        # Grouped by display string, not status id, because there's no
+        # status-id lookup table yet. A status rename retroactively changes
+        # historical grouping — accepted for now, and called out here so it
+        # isn't mistaken for an oversight. For status history, use
+        # issue_status_interval (interval_status_name in the flow view).
         sql: "{CUBE}.fields->'status'->>'name'"
         type: string
 
@@ -72,7 +69,7 @@ cubes:
         type: string
 
       - name: priority_name
-        # Same fast-path caveat as status_name above: grouped/filtered by
+        # Same caveat as status_name above: grouped/filtered by
         # display string (Jira has no stable priority id exposed here),
         # not an id - a priority scheme rename would retroactively change
         # historical filtering. Acceptable for now, same reasoning as

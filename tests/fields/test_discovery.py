@@ -1,4 +1,4 @@
-"""Phase 3a.1 (docs/phase3-field-selection-design.md §2.1/§6).
+"""fields/discovery.py: field definitions and fill-rate stats.
 
 `_field_stats_row` is pure - no network, no Postgres - so it's tested
 directly here, zero-network. `refresh_field_definitions`/`compute_field_stats`/
@@ -72,7 +72,7 @@ def postgres_dsn() -> Iterator[str]:
         ops_metadata.create_all(engine)
         with engine.begin() as conn:
             # Minimal jira_raw shape - just the column compute_field_stats
-            # reads. dlt owns the real schema (P2-D1); hand-writing DDL here
+            # reads. dlt owns the real schema; hand-writing DDL here
             # is only for this throwaway test fixture.
             conn.execute(sa.text("CREATE SCHEMA IF NOT EXISTS jira_raw"))
             conn.execute(
@@ -184,7 +184,7 @@ def test_compute_field_stats_only_covers_known_fields_and_scopes_by_project(post
 
 @pytest.mark.postgres
 def test_discover_end_to_end_matches_acceptance_criterion(postgres_dsn):
-    """The literal 3a.1 acceptance: after `discover`, field_stats carries real
+    """After `discover`, field_stats carries real
     fill rates a caller (`flowbi fields list`) can read back."""
     instance_id = "discover-test"
     fetched = [Field(id="story_points", name="Story Points", schema_type="number", custom=True)]

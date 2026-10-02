@@ -1,11 +1,11 @@
 """SQLAlchemy Core table definitions for flowbi_ops.
 
 Alembic owns this schema exclusively — dlt owns jira_raw and must never be
-touched from here (docs/phase2-postgres-design.md P2-D1/§5). Core, not ORM (library decision:
-"SQL toolkit for locks / whole-table checks -> SQLAlchemy Core").
+touched from here: if dlt created it, only dlt changes it. SQLAlchemy Core,
+not the ORM: it arrives with Alembic, and nothing here needs more.
 
 This module is also migrations/env.py's target_metadata: the shapes defined
-here and the DDL in migrations/versions/0001_ops_schema.py must match exactly,
+here and the DDL in migrations/versions/ops_schema.py must match exactly,
 or `alembic revision --autogenerate` will propose a spurious diff against
 itself the moment a real migration is added on top of this baseline.
 """
@@ -62,8 +62,7 @@ rate_budget = sa.Table(
     ),
 )
 
-# Created now, consumed in Phase 3 (populating it later would be a migration
-# nobody wants) — docs/phase2-postgres-design.md §8.
+# Issues a load touched, queued for the next incremental `flowbi transform`.
 issue_dirty = sa.Table(
     "issue_dirty",
     metadata,
@@ -75,11 +74,10 @@ issue_dirty = sa.Table(
     ),
 )
 
-# Phase 3a (docs/phase3-field-selection-design.md §2.1) — "WHAT EXISTS,
-# refreshed every run from /field". Trimmed from the design doc's fuller
-# column list (schema_items, custom_type, clause_names) — nothing in 3a.1
-# reads them yet, and an always-null column is worse than not having it;
-# add them back alongside whichever later milestone actually needs one.
+# What exists: refreshed every run from /field. Deliberately trimmed: Jira's
+# schema_items, custom_type and clause_names aren't stored, since nothing
+# reads them yet and an always-null column is worse than not having it; add
+# one back alongside whatever first needs it.
 field_definition = sa.Table(
     "field_definition",
     metadata,
@@ -97,7 +95,7 @@ field_definition = sa.Table(
     sa.Column("disappeared_at", sa.DateTime(timezone=True)),  # set when it stops appearing
 )
 
-# "WHAT WE MEASURED, recomputed by `flowbi fields discover`" — §2.1.
+# What we measured: recomputed by `flowbi fields discover`.
 field_stats = sa.Table(
     "field_stats",
     metadata,
@@ -114,17 +112,16 @@ field_stats = sa.Table(
     ),
 )
 
-# "WHAT WE DECIDED (append-only — this IS the audit trail)" — §2.1, Phase 3a.2.
+# What we decided: append-only, so this table is the audit trail.
 # save_selection() never UPDATEs a row: each save writes a full new-version
 # snapshot (every currently-selected field, live or deprecated, with the
 # requested changes applied), so `WHERE version = max(version)` is always a
 # complete, self-consistent view.
 #
-# Resolves an ambiguity the design doc leaves open: version numbers here are
-# scoped per instance_id (each instance's own sequence starts at 1), not one
-# global counter shared across every Jira instance ever connected — simpler,
-# and this codebase only has one instance in practice (design doc §14 open
-# question #5). The unique constraint below holds either way.
+# Version numbers are scoped per instance_id (each instance's own sequence
+# starts at 1), not one global counter shared across every Jira instance ever
+# connected: simpler, and a deployment usually has one instance. The unique
+# constraint below holds either way.
 field_selection = sa.Table(
     "field_selection",
     metadata,
@@ -141,19 +138,17 @@ field_selection = sa.Table(
     sa.Column(
         "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
     ),
-    sa.Column("created_by", sa.Text(), nullable=False),  # 'cli:<os user>' until 3b adds a JWT
+    sa.Column("created_by", sa.Text(), nullable=False),  # 'cli:<os user>' for CLI writes
     sa.Column("note", sa.Text()),
     sa.UniqueConstraint("version", "instance_id", "field_name", "schema_type"),
 )
 
-# Phase 3a.5 (docs/phase3-field-selection-design.md §2.2) — "This table is why
-# the UI stays simple. A rebuild takes minutes; a web request must not."
+# A queue, so a caller never runs a rebuild itself: a rebuild takes minutes,
+# and `flowbi transform` drains the queue.
 #
-# One correction to the design doc: it omits instance_id, but `version` is
-# scoped per instance (field_selection above, §14 open question #5's
-# resolution) — a version number alone doesn't say which instance's selection
-# it refers to, so instance_id is added here (trust reality, fix
-# the doc in the same change).
+# Carries instance_id because `version` is scoped per instance (field_selection
+# above): a version number alone doesn't say which instance's selection it
+# refers to.
 rebuild_request = sa.Table(
     "rebuild_request",
     metadata,

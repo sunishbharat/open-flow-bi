@@ -7,7 +7,8 @@ rather than the comma-separated string Cloud accepts.
 
 HTTP is stubbed at `requests.adapters.HTTPAdapter.send` - the lowest layer - so dlt's own
 pagination logic runs unmodified. `_search_pages` is a plain generator, not a DltResource,
-so the dlt worker-thread/vcrpy race from M6 doesn't apply here.
+so the dlt/vcrpy race (dlt extracts on a worker thread whose teardown can outlive a
+test's cassette) doesn't apply here.
 """
 
 import json

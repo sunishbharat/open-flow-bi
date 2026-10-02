@@ -1,16 +1,14 @@
 """Versioned field selection: promote/demote, export/import YAML.
 
-docs/phase3-field-selection-design.md §2.1/§3/§5, Phase 3a.2. `field_selection`
-is append-only — "this IS the audit trail" — so `save_selection` never updates
+`field_selection` is append-only — "this IS the audit trail" — so `save_selection` never updates
 a row in place; every save writes a full new-version snapshot (every
 currently-selected field, live or deprecated, with the requested changes
 applied). `current_selection` at the latest version is then always a
 complete, self-consistent view — no caller ever needs to union rows across
 versions to know "what's selected right now".
 
-No new dependency beyond PyYAML (already transitive via dlt/vcrpy, now
-declared explicitly since this module imports it directly — pendulum's M5
-precedent, docs/session-status-2026-09-18.md).
+No new dependency beyond PyYAML (already transitive via dlt/vcrpy, and
+declared explicitly since this module imports it directly).
 """
 
 from __future__ import annotations
@@ -37,9 +35,9 @@ _IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 # field_id comes from Jira's own /field endpoint, never from the operator,
 # and is embedded as a JSON key in generated SQL (fields ->> 'field_id'), not
 # as a raw identifier the way column_name is. Real Jira field ids are always
-# alphanumeric + underscore, but NOT always lowercase — found live that
-# "Fix Version/s"'s own id is "fixVersions" (camelCase), which _IDENTIFIER_RE
-# above wrongly rejected, aborting a whole `flowbi transform --rebuild-all`
+# alphanumeric + underscore, but NOT always lowercase — "Fix Version/s"'s
+# own id is "fixVersions" (camelCase), which _IDENTIFIER_RE above would
+# reject, aborting a whole `flowbi transform --rebuild-all`
 # run over one unrelated field. Less strict than _IDENTIFIER_RE for that
 # reason; still blocks anything that could break out of the single-quoted
 # JSON-key string it gets embedded in.
@@ -70,7 +68,7 @@ def validate_field_id(field_id: str) -> None:
         )
 
 
-# Names a promoted field can never take (architecture review finding 13).
+# Names a promoted field can never take.
 # The runner's DDL is idempotent (ADD COLUMN / CREATE TABLE IF NOT EXISTS), so
 # reusing an existing name is silently a no-op, and what follows writes into
 # the wrong thing: a column target named after one of analytics.issue's own
@@ -127,7 +125,7 @@ class SelectionRow:
 def resolve_field_name(
     dsn: str, instance_id: str, field_name: str, schema_type: str | None = None
 ) -> tuple[str, str | None]:
-    """Look up field_definition by display name (§2.1: "keyed by NAME, not id").
+    """Look up field_definition by display name (keyed by name, since ids are per-instance).
 
     Returns (schema_type, field_id). Raises ValueError if zero or more than
     one field_definition row matches — the CLI/service layer's job is to turn
@@ -206,7 +204,7 @@ def current_selection(
 
 
 def _check_no_column_name_collisions(working: dict[tuple[str, str], SelectionRow]) -> None:
-    """§14 open question #4: two fields both wanting the same column - reject
+    """Two fields both wanting the same column - reject
     at save time with a clear message, rather than discovering it at rebuild.
     Only live (not deprecated) rows can collide: two column targets on one
     column, or two bridge targets on one table.
@@ -229,14 +227,14 @@ def save_selection(
     dsn: str, instance_id: str, changes: list[SelectionChange], actor: str
 ) -> int:
     """Write a new version: the prior version's rows, with `changes` applied.
-    Never updates a row in place (§2.1: append-only). Returns the new version
+    Never updates a row in place (append-only). Returns the new version
     number, starting at 1.
 
     A save that promotes anything also queues a full rebuild of that version
     (flowbi_ops.rebuild_request), in the same transaction. Without it, the
     next incremental `flowbi transform` added the column but filled it only
     for dirty issues, and every other row stayed NULL until someone ran
-    `fields request-rebuild` (architecture review finding 11).
+    `fields request-rebuild`.
     """
     if not changes:
         raise ValueError("no changes to save")
@@ -357,7 +355,7 @@ def save_selection(
 
 def export_yaml(dsn: str, instance_id: str, version: int | None = None) -> str:
     """The selection at `version` (default: latest) as YAML text — a
-    materialisation of the database, not the other way round (§3).
+    materialisation of the database, not the other way round.
     """
     resolved_version, selection = current_selection(dsn, instance_id, version=version)
     doc = {

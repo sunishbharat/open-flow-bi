@@ -1,21 +1,19 @@
 """SQL assertions for whole-table invariants, run against Postgres.
 
-docs/phase2-postgres-design.md §9: pandera (quality/checks.py) validates row
+pandera (quality/checks.py) validates row
 shape from a bounded sample; it is the wrong tool for "is this unique across
 25 million rows" — that's a `GROUP BY ... HAVING count(*) > 1` and the
 database is better at it than any frame library. SQLAlchemy Core (arrives
 with Alembic, no new dependency), not the ORM.
 
 BLOCKING checks must all return 0 — a non-zero result is what "the quality
-gate has teeth" means (§9): `flowbi quality check --destination postgres`
+gate has teeth" means: `flowbi quality check --destination postgres`
 exits 1 and records `sync_run.status = 'quality_failed'`. ALERTING checks are
 informational only and never fail the gate.
 
-Not scoped by instance_id: this mirrors the design doc's own §9 SQL exactly
-(a whole-table check, not a per-instance one). A real multi-instance
-deployment would need scoping here; there isn't one yet (§15 open question
-#5 — still a single instance in practice), so this is left as literally
-specified rather than guessed at.
+Not scoped by instance_id: these are whole-table checks, not per-instance
+ones. A multi-instance deployment would need scoping here; until one exists,
+the checks stay as simple as possible rather than guessing at it.
 """
 
 from dataclasses import dataclass, field
@@ -32,12 +30,11 @@ BLOCKING: dict[str, str] = {
         "SELECT count(*) FROM (SELECT instance_id, issue_id, history_id, item_index "
         "FROM jira_raw.issue_changelog GROUP BY 1, 2, 3, 4 HAVING count(*) > 1) d"
     ),
-    # §9 open question #3, resolved here: scoped to the whole table, not one
-    # load package — the literal SQL the design doc gives, and simpler.
+    # Scoped to the whole table, not one load package: simpler.
     # Documented consequence, not a bug to work around: this is non-zero
     # until every changelog issue has a matching row in `issues` — run
     # `extract issues` before `extract changelog` for a given project (see
-    # README), rather than weakening the check to tolerate the gap.
+    # docs/cli.md), rather than weakening the check to tolerate the gap.
     "no_orphan_changelog": (
         "SELECT count(*) FROM jira_raw.issue_changelog c "
         "LEFT JOIN jira_raw.issues i USING (instance_id, issue_id) "
@@ -51,7 +48,7 @@ BLOCKING: dict[str, str] = {
 # Completeness is recorded per issue in jira_raw.issue_changelog_status
 # (flatten.changelog_status). The earlier version of this check counted
 # changelog_complete=false item rows, and could only ever return 0: an
-# incomplete issue has no item rows (architecture review finding 4).
+# incomplete issue has no item rows.
 ALERTING: dict[str, str] = {
     "changelog_incomplete": (
         "SELECT count(*) FROM jira_raw.issue_changelog_status WHERE NOT changelog_complete"

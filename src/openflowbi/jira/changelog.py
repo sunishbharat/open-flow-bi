@@ -53,7 +53,7 @@ def fetch_bulk(
     non-JSON response, not just a 404 status code.
 
     The endpoint caps issues per request and pages its histories with a
-    top-level nextPageToken (architecture review finding 5), so ids are sent
+    top-level nextPageToken, so ids are sent
     in chunks and every page of a chunk is read. A chunk is only returned
     once all of its pages are in: an issue split across pages must never be
     yielded as complete with half its history. A chunk the endpoint rejects
@@ -165,9 +165,9 @@ def fetch(
     --limit-bounded caller can then only stop at an issue boundary in cursor
     order. Deferring tiers 2 and 3 to the end of the whole walk let the limit
     stop first: later, tier-1-complete issues advanced the watermark past
-    the deferred ones, which were never fetched again (architecture review
-    finding 6). Buffering one page still stops the walk within a page of the
-    limit (every command honours --limit).
+    the deferred ones, which were never fetched again. Buffering one page
+    still stops the walk within a page of the limit (every command honours
+    --limit).
     """
     for batch in itertools.batched(issues, batch_size):
         yield from _fetch_batch(base_url, auth, is_cloud, batch, client_cert)

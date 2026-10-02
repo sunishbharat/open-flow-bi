@@ -4,8 +4,8 @@ Revision ID: 8ac3badd15cb
 Revises: b4a3b4638006
 Create Date: 2026-09-21 11:02:02.767545
 
-Phase 3a.2 (docs/phase3-field-selection-design.md §2.1): "WHAT WE DECIDED
-(append-only — this IS the audit trail)". Column shapes here must match
+field_selection: what we decided to promote. Append-only, so this table is
+the audit trail. Column shapes here must match
 src/openflowbi/ops/tables.py exactly (that module is migrations/env.py's
 target_metadata) — confirmed by autogenerate detecting only this one added
 table, no drift elsewhere.

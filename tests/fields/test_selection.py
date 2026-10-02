@@ -1,4 +1,4 @@
-"""Phase 3a.2 (docs/phase3-field-selection-design.md §2.1/§3/§5): versioned
+"""Versioned
 field_selection, promote/demote, export/import YAML. Needs real Postgres -
 excluded from the default run, same pattern as the rest of the
 `postgres`-marked suite.
@@ -118,7 +118,7 @@ def test_save_selection_promote_then_demote_is_append_only(postgres_dsn):
     assert sel_v1[("Story Points", "number")].deprecated_at is None
     _, sel_v2 = selection.current_selection(postgres_dsn, INSTANCE_ID, version=2)
     assert sel_v2[("Story Points", "number")].deprecated_at is not None
-    # The column_name survives demotion (design doc §10 rule 1: never drop it).
+    # The column_name survives demotion (a column is never dropped).
     assert sel_v2[("Story Points", "number")].column_name == "story_points"
 
 
@@ -187,7 +187,7 @@ def test_save_selection_rejects_column_name_collision(postgres_dsn):
 
 
 def test_export_then_import_round_trips_content(postgres_dsn):
-    """The literal 3a.2 acceptance: promote a field, export YAML, re-import —
+    """Promote a field, export YAML, re-import —
     same version content."""
     selection.save_selection(
         postgres_dsn,
@@ -238,7 +238,7 @@ def _rebuild_requests(dsn: str) -> list[tuple]:
 
 
 def test_promote_queues_a_full_rebuild_of_the_new_version(postgres_dsn):
-    # Architecture review finding 11: without this, the next incremental
+    # Without this, the next incremental
     # transform filled the new column only for dirty issues.
     promote = selection.SelectionChange(
         field_name="Story Points", schema_type="number", promote=True, column_name="points"

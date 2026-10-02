@@ -30,7 +30,7 @@ FAKE_PROFILE = DeploymentProfile(
 
 # Six issues, one per day, each "updated" == "created" — oldest first, which
 # is the order the (mocked) search endpoint would return them in when sorted
-# `order by updated asc` (M5's incremental JQL, built by _jql).
+# `order by updated asc` (the incremental JQL, built by _jql).
 ROWS = [
     {
         "id": str(i),
@@ -63,7 +63,7 @@ def _passes_floor(row, jql):
 def _floor_filtered_search_pages(call_log):
     """Stand-in for _search_pages that filters ROWS the way a real Jira
     `updated >= "..."` JQL clause would, and records which issue ids each
-    call actually fetched — the "request-count spy" the M5 plan calls for.
+    call actually fetched — a request-count spy.
     """
 
     def fake(profile, jql, expand=None):
@@ -91,8 +91,7 @@ def _kill_after(n):
 
 
 def _loaded_issue_ids(out_dir):
-    # issue_id is bigint on disk from M7.2 on (docs/phase2-postgres-design.md
-    # §3) — cast back to str so comparisons against ALL_IDS/call_log (still
+    # issue_id is bigint on disk — cast back to str so comparisons against ALL_IDS/call_log (still
     # str, matching the raw Jira JSON shape) don't need to change throughout.
     files = list(out_dir.glob("jira_raw/issues/*.parquet"))
     ids: set[str] = set()
@@ -103,7 +102,7 @@ def _loaded_issue_ids(out_dir):
 
 # Same six issues as ROWS above, but each carries one changelog history item
 # (expand tier, complete=True) — an issue with zero histories yields zero
-# flatten.changelog() rows, so it could never exercise the M7.5 incremental
+# flatten.changelog() rows, so it could never exercise the incremental
 # cursor at all (see pipeline/source.py's issue_changelog comment).
 CHANGELOG_ROWS = [
     {
@@ -302,7 +301,7 @@ def test_limit_truncated_run_advances_cursor_without_skipping_unfetched_issues(t
     """A --limit-truncated debug run must only ever advance the incremental
     watermark to the oldest-updated issue it actually fetched, so a later
     unlimited run still picks up whatever the limit cut off — never a silent
-    skip (M5 design note in the build plan).
+    skip.
     """
     out_dir = tmp_path / "out"
     pipelines_dir = tmp_path / ".dlt"
@@ -346,8 +345,8 @@ def test_limit_truncated_run_advances_cursor_without_skipping_unfetched_issues(t
 def test_changelog_limit_truncated_run_advances_cursor_without_skipping_unfetched_issues(
     tmp_path,
 ):
-    """M7.5 acceptance (docs/phase2-postgres-design.md §14): issue_changelog
-    is now incremental too — mirrors the `issues` test directly above, one
+    """issue_changelog
+    is incremental too — mirrors the `issues` test directly above, one
     resource swapped for the other.
     """
     out_dir = tmp_path / "out"
@@ -412,7 +411,7 @@ def _run_changelog(tmp_path, rows, limit=None):
 
 
 def test_changelog_status_row_is_written_for_every_issue_even_without_items(tmp_path):
-    """Architecture review finding 4: an issue with no item rows (never
+    """An issue with no item rows (never
     transitioned, or per-issue tier unavailable) still gets a status row, so
     the transform can tell it apart from an issue never extracted at all.
     """
@@ -467,7 +466,7 @@ def test_changelog_limit_never_cuts_an_issue_in_half(tmp_path):
 
 
 def test_changelog_limit_never_skips_an_issue_deferred_to_a_fallback_tier(tmp_path):
-    """Architecture review finding 6: issue 1's embedded changelog is truncated,
+    """Issue 1's embedded changelog is truncated,
     so it needs the per-issue tier. That tier used to run after the whole walk,
     so --limit 2 loaded issues 2 and 3 instead, advancing the watermark past
     issue 1, which no later run would fetch.
@@ -487,7 +486,7 @@ def test_changelog_limit_never_skips_an_issue_deferred_to_a_fallback_tier(tmp_pa
 
 def test_a_package_left_by_a_failed_load_is_loaded_by_the_next_run(tmp_path):
     """run() is split into extract/normalize/load so only load() sits under
-    the advisory lock (architecture review finding 7). pipeline.run() used to
+    the advisory lock. pipeline.run() used to
     finish a package a crashed run left behind; the split version must too.
     """
     out_dir = tmp_path / "out"
@@ -549,7 +548,7 @@ def _run_returning(tmp_path, rows, jqls=None, **run_kwargs):
 
 
 def test_updates_straddling_a_dst_fall_back_both_load(tmp_path):
-    """Architecture review finding 1. Run 2's issue is 40 minutes later in
+    """Run 2's issue is 40 minutes later in
     real time but sorts lower as a string (+0100 after the fall-back vs
     +0200 before it), so a string cursor silently dropped it."""
     _run_returning(tmp_path, [_issue("1", "2024-10-27T02:30:00.000+0200")])  # 00:30Z
@@ -559,7 +558,7 @@ def test_updates_straddling_a_dst_fall_back_both_load(tmp_path):
 
 
 def test_late_indexed_issue_inside_the_overlap_window_still_loads(tmp_path):
-    """Architecture review finding 2. Cloud search is eventually consistent:
+    """Cloud search is eventually consistent:
     issue 2 was updated before run 1's watermark but only became searchable
     afterwards. It is inside the 1-hour overlap, so run 2 keeps it; issue 3
     is older than the overlap and stays filtered out."""
@@ -610,7 +609,7 @@ def test_reset_watermark_only_touches_the_resources_being_run(tmp_path):
 
 
 def test_a_cursor_stored_as_a_string_before_the_fix_is_migrated(tmp_path):
-    """Pipelines that ran before finding 1's fix hold a string last_value.
+    """Pipelines that ran before the datetime cursor hold a string last_value.
     Without the migration dlt raises TypeError comparing it with the datetime
     rows it gets now."""
     _run_returning(tmp_path, [_issue("1", "2024-01-01T10:00:00.000+0000")])

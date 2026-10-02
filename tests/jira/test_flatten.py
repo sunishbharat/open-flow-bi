@@ -76,7 +76,7 @@ def test_issues_handles_missing_fields_key():
 def test_issues_never_uses_key_as_identity():
     raw = [{"id": "10004", "key": "PROJ-4", "fields": {}}]
     row = next(flatten.issues(raw, INSTANCE_ID))
-    # bigint (M7.2: docs/phase2-postgres-design.md §3), never the string key.
+    # bigint, never the string key.
     assert row["issue_id"] == 10004
     # issue_key is carried but must never be relied on as an identifier.
     assert row["issue_key"] == "PROJ-4"
@@ -84,7 +84,7 @@ def test_issues_never_uses_key_as_identity():
 
 def test_issues_carries_instance_id_for_cross_instance_isolation():
     # Two instances, same numeric issue id: must remain distinguishable rows
-    # once merged into a shared jira_raw.issues table (P2-D2).
+    # once merged into a shared jira_raw.issues table.
     raw = [{"id": "1", "key": "A-1", "fields": {}}]
     row_a = next(flatten.issues(raw, "instance-a"))
     row_b = next(flatten.issues(raw, "instance-b"))
@@ -165,7 +165,7 @@ def test_changelog_empty_batches_yield_nothing():
 
 
 def test_changelog_stamps_updated_at_from_issue_updated_map():
-    # M7.5: the incremental cursor field for issue_changelog is the issue's
+    # The incremental cursor field for issue_changelog is the issue's
     # own `fields.updated`, not the history's `created_at` - a separate
     # concept passed in via the issue_updated map, keyed by raw (string) id.
     history = {"id": "h1", "created": "2024-01-01T00:00:00.000+0000", "items": [{"field": "x"}]}
@@ -187,7 +187,7 @@ def test_changelog_updated_at_defaults_to_none_when_map_omitted():
 
 
 def test_updated_at_is_an_instant_so_the_cursor_orders_across_offsets():
-    # Architecture review finding 1: dlt's incremental takes max() over
+    # dlt's incremental takes max() over
     # updated_at. As raw strings, 02:10+0100 (01:10Z) sorts below 02:30+0200
     # (00:30Z) although it is 40 minutes later: the DST fall-back case.
     raw = [
@@ -200,7 +200,7 @@ def test_updated_at_is_an_instant_so_the_cursor_orders_across_offsets():
 
 
 def test_changelog_status_records_an_issue_with_no_item_rows():
-    # Architecture review finding 4: flatten.changelog() yields nothing for
+    # flatten.changelog() yields nothing for
     # these, so without a status row "per-issue tier unavailable" and "never
     # transitioned" were indistinguishable from "not extracted at all".
     updated = {"7": "2024-02-01T00:00:00.000+0000"}

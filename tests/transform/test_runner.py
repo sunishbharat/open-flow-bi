@@ -1,5 +1,5 @@
-"""Phase 3a.3-3a.6 (docs/phase3-field-selection-design.md §4-§7). Needs real
-Postgres - excluded from the default run, same pattern as
+"""transform/runner.py: status intervals, promoted columns, the rebuild queue
+and incremental rebuilds. Needs real Postgres - excluded from the default run, same pattern as
 tests/fields/test_selection.py and the rest of the `postgres`-marked suite.
 """
 
@@ -37,7 +37,7 @@ def postgres_dsn() -> Iterator[str]:
             conn.execute(sa.text("CREATE SCHEMA IF NOT EXISTS jira_raw"))
             # Minimal jira_raw shape, same rationale as
             # tests/fields/test_discovery.py's fixture: dlt owns the real
-            # schema (P2-D1), this is only for this throwaway fixture.
+            # schema, this is only for this throwaway fixture.
             conn.execute(
                 sa.text(
                     "CREATE TABLE jira_raw.issues (instance_id text, issue_id bigint, "
@@ -178,7 +178,7 @@ def _interval_rows(dsn: str, issue_id: int) -> list[tuple]:
         engine.dispose()
 
 
-# --- 3a.3: seq=0 seeding + a hand-computed cycle time ------------------------
+# --- seq=0 seeding + a hand-computed cycle time ------------------------------
 
 
 def test_status_interval_seeds_seq_zero_from_created_at_and_matches_hand_computed(
@@ -199,7 +199,7 @@ def test_status_interval_seeds_seq_zero_from_created_at_and_matches_hand_compute
         (1, "2", "In Progress", T1, T2, 7200),
         (2, "3", "Done", T2, None, None),
     ]
-    # The literal 3a.3 acceptance line: min(entered_at) = created_at.
+    # Every interval series starts at creation: min(entered_at) = created_at.
     assert rows[0][3] == T0
 
 
@@ -219,7 +219,7 @@ def test_status_interval_seeds_from_current_status_when_no_changelog_exists(
     assert _interval_rows(postgres_dsn, 2) == [(0, "1", "Open", T0, None, None)]
 
 
-# --- 3a.4: promoted columns + bridge tables ----------------------------------
+# --- promoted columns + bridge tables ----------------------------------------
 
 
 def test_promoted_column_and_bridge_table_are_populated(postgres_dsn: str) -> None:
@@ -283,7 +283,7 @@ def test_promoted_column_and_bridge_table_are_populated(postgres_dsn: str) -> No
 
 def test_camel_case_jira_field_id_does_not_crash_transform(postgres_dsn: str) -> None:
     # Regression: "Fix Version/s"'s real Jira field id is "fixVersions"
-    # (camelCase) - found live crashing `flowbi transform --rebuild-all`
+    # (camelCase) - this once crashed `flowbi transform --rebuild-all`
     # entirely with a ValueError, because validate_identifier (meant for
     # operator-chosen column_name) was also being applied to field_id, which
     # Jira does not guarantee is lowercase.
@@ -329,7 +329,7 @@ def test_camel_case_jira_field_id_does_not_crash_transform(postgres_dsn: str) ->
 
 
 def test_bridge_table_named_after_a_reserved_word_works(postgres_dsn: str) -> None:
-    # Architecture review finding 13: `order` passes validate_identifier but
+    # `order` passes validate_identifier but
     # broke the unquoted bridge-table DDL.
     _insert_issue(postgres_dsn, 6, T0, {"status": {"id": "1"}, "labels": ["a"]})
     selection.save_selection(
@@ -352,7 +352,7 @@ def test_bridge_table_named_after_a_reserved_word_works(postgres_dsn: str) -> No
     assert result.bridge_rows == 1
 
 
-# --- 3a.5: rebuild_request queue ----------------------------------------------
+# --- rebuild_request queue ---------------------------------------------------
 
 
 def test_rebuild_request_is_drained_and_marked_succeeded(postgres_dsn: str) -> None:
@@ -400,7 +400,7 @@ def test_rebuild_request_is_drained_and_marked_succeeded(postgres_dsn: str) -> N
     assert priority_name == "High"
 
 
-# --- 3a.6: incremental proof --------------------------------------------------
+# --- incremental proof -------------------------------------------------------
 
 
 def test_incremental_transform_touches_only_the_dirty_issue(postgres_dsn: str) -> None:
@@ -427,10 +427,10 @@ def test_incremental_transform_touches_only_the_dirty_issue(postgres_dsn: str) -
         (0, "1", "Open", T0, T1, 3600),
         (1, "2", "Done", T1, None, None),
     ]
-    assert rows_11_after == rows_11_before  # untouched — the literal 3a.6 line
+    assert rows_11_after == rows_11_before  # untouched
 
 
-# --- R3 (architecture review finding 4): never build from an unknown changelog
+# --- never build from an unknown changelog -----------------------------------
 
 
 def test_issue_with_no_changelog_extracted_is_skipped_by_transform(postgres_dsn: str) -> None:
@@ -465,7 +465,7 @@ def test_incomplete_or_stale_changelog_is_skipped_but_a_complete_one_builds(
     assert _interval_rows(postgres_dsn, 23) == [(0, "1", "Open", T1, None, None)]
 
 
-# --- R6 (architecture review findings 14 and 15) -------------------------------
+# --- malformed values, type mismatches, concurrent transforms ----------------
 
 
 def _promote_story_points(dsn: str, schema_type: str = "number") -> None:
@@ -532,7 +532,7 @@ def test_a_column_of_another_type_is_skipped_instead_of_wedging_transform(
 
 def test_a_rebuild_request_left_running_by_a_crash_is_run_again(postgres_dsn: str) -> None:
     _insert_issue(postgres_dsn, 33, T0, {"customfield_10016": 8})
-    _promote_story_points(postgres_dsn)  # queues a rebuild request (finding 11)
+    _promote_story_points(postgres_dsn)  # queues a rebuild request
     engine = sa.create_engine(postgres_dsn)
     with engine.begin() as conn:
         conn.execute(

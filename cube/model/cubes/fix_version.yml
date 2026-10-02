@@ -3,20 +3,18 @@ cubes:
     sql_table: analytics.fix_version
 
     # Bridge-table cube for array-valued fields promoted with `--target
-    # bridge_table` (docs/phase3-field-selection-design.md, README.md's "For
-    # developers" section, "Array-valued fields" subsection) — the one
-    # documented-but-unbuilt gap as of 2026-09-22, now closed. One row per
-    # (issue, array element): promoting "Fix Version/s" produced this table,
-    # one row per fix version attached to an issue. Mirrors
-    # issue_status_interval.yml/issue.yml's shape and join-direction
-    # reasoning — joined from issues.yml, not declared here, so the flow
-    # view's join_path direction matches wherever the join edge lives.
+    # bridge_table` (see docs/development.md). One row per (issue, array
+    # element): promoting "Fix Version/s" produced this table, one row per fix
+    # version attached to an issue. Mirrors
+    # issue_status_interval.yml/issue.yml's shape and join-direction reasoning
+    # — joined from issues.yml, not declared here, so the flow view's
+    # join_path direction matches wherever the join edge lives.
 
     dimensions:
       - name: bridge_id
         # No single-column surrogate key exists (the real PK is
         # instance_id+issue_id+seq) - same pattern as interval_id/issue_ref
-        # in the other two full-path cubes.
+        # in issue_status_interval.yml and issue.yml.
         sql: "{CUBE}.instance_id || ':' || {CUBE}.issue_id || ':' || {CUBE}.seq"
         type: string
         primary_key: true

@@ -1,10 +1,10 @@
-"""Cube smoke query for the M9a.3 CI job.
+"""Cube smoke query for the cube-smoke CI job.
 
 Queries the `flow` view that Cube compiles from cube/model/ against the
 fixture scripts/seed_cube_smoke_fixture.py just loaded, and checks the
 result's *shape* - expected member names, non-empty rows, a total that
 matches the fixture's own known count - rather than hard-coded production
-numbers (open-flow-bi-repo-structure_1.md §4: "asserts shape, not values").
+numbers.
 A `cube/model/` break (renamed dimension, broken join, bad SQL expression)
 fails this the same way it would fail a real dashboard, before it reaches
 anyone.

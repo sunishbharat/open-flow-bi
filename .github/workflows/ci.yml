@@ -11,8 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # setup-uv publishes no floating major tag (v10) since v8, only exact,
+      # immutable versions: bump this one deliberately.
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
 
@@ -28,29 +30,26 @@ jobs:
       # No network at test time (tests/conftest.py's vcr_config + this
       # project's --record-mode=none default in pyproject.toml): all Jira
       # HTTP is replayed from tests/cassettes/{cloud,dc}/, real or
-      # hand-authored (tests are written with the code).
+      # hand-authored.
       - name: pytest
         run: uv run pytest -q
 
-      # M7.6: the Postgres-marked tests (concurrency, issue_dirty, SQL
-      # checks) each spin up their own postgres:16-alpine via
+      # The Postgres-marked tests (concurrency, issue_dirty, SQL checks,
+      # roles) each spin up their own postgres:16-alpine via
       # testcontainers[postgres] - no docker-compose/service-container
       # wiring needed, only a working Docker daemon, which ubuntu-latest
-      # runners already provide (docs/phase2-postgres-design.md §11: "so CI
-      # needs no fixture wiring").
+      # runners already provide.
       - name: pytest (postgres, testcontainers)
         run: uv run pytest -q -m postgres
 
-  # M9a.3 (docs/phase4-cube-dashboard-design.md §7): cube/ is isolated from
-  # src/ at runtime (it's a volume-mounted config directory, not a Python
-  # package - open-flow-bi-repo-structure_1.md §4), and that isolation is
-  # wrong in CI: an Alembic column rename or a bad cube/model/ edit would
-  # otherwise break every dashboard with a green build. This job starts
-  # Postgres, runs the same migration/role/grant scripts a real operator
-  # runs (README.md "Cube + Superset dashboard" section), loads a fixture
-  # straight into jira_raw.issues, starts Cube against cube/, and issues one
-  # smoke query against the `flow` view - asserting shape, not production
-  # values, per the repo-structure doc's own description of this job.
+  # cube/ is isolated from src/ at runtime (it's a volume-mounted config
+  # directory, not a Python package), and that isolation is wrong in CI: an
+  # Alembic column rename or a bad cube/model/ edit would otherwise break
+  # every dashboard with a green build. This job starts Postgres, runs the
+  # same migration/role/grant scripts a real operator runs (docs/dashboard.md),
+  # loads a fixture straight into jira_raw.issues, starts Cube against cube/,
+  # and issues one smoke query against the `flow` view - asserting shape, not
+  # production values.
   cube-smoke:
     runs-on: ubuntu-latest
     services:
@@ -73,7 +72,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
 
@@ -92,7 +91,7 @@ jobs:
         run: uv run alembic upgrade head
 
       - name: create roles (flowbi_writer, cube_reader)
-        # Same script and invocation shape README.md documents for a real
+        # Same script and invocation shape docs/docker.md documents for a real
         # operator - dummy passwords, this Postgres is thrown away at the
         # end of the job.
         run: |
@@ -123,7 +122,7 @@ jobs:
             -e CUBEJS_DB_USER=cube_reader \
             -e CUBEJS_DB_PASS="$CUBE_READER_PW" \
             -e CUBEJS_DEV_MODE=true \
-            cubejs/cube:latest
+            cubejs/cube:v1.7.48
 
       - name: wait for Cube to compile the model
         run: |

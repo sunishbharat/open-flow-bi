@@ -1,4 +1,4 @@
-"""M7.5 acceptance proof (docs/phase2-postgres-design.md §8/§14):
+"""issue_dirty end to end:
 `flowbi_ops.issue_dirty` is populated from a completed Postgres load, and
 holds exactly the issue ids that load actually touched — not every issue
 that has ever loaded, and not issues an earlier run already covered.
@@ -73,7 +73,7 @@ def postgres_dsn() -> Iterator[str]:
         dsn = pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
         # Deliberately bypasses Alembic: this test only needs the four
         # flowbi_ops tables to exist, not migration history/version
-        # tracking, which M7.3's own tests already cover separately.
+        # tracking, which other tests cover separately.
         # migrations/env.py hits the same "schema must exist before
         # create_all" ordering gap on a genuinely fresh database (see its
         # comment); mirrored here rather than reusing Alembic wholesale.
@@ -156,10 +156,10 @@ def test_issue_dirty_has_exactly_the_touched_ids_per_load(tmp_path, postgres_dsn
     assert _load_touched_ids(postgres_dsn, list(info.loads_ids)) == {1, 2, 3, 4}
     assert _dirty_ids(postgres_dsn) == {1, 2, 3, 4}
 
-    # Run 2 (M7.5 acceptance, docs/phase2-postgres-design.md §14): only issue
+    # Run 2: only issue
     # 3 (transitioned again) and issue 5 (new) actually changed. Issue 4 sits
-    # at the old watermark, inside the 1-hour overlap (OVERLAP_SECONDS,
-    # architecture review finding 2). dlt turns its boundary dedup off when
+    # at the old watermark, inside the 1-hour overlap (OVERLAP_SECONDS).
+    # dlt turns its boundary dedup off when
     # `lag` is set and leaves deduplication to the destination's merge, so
     # issue 4 is reloaded (same row, merged in place) and re-marked dirty,
     # an idempotent rebuild. Issues 1 and 2, outside the overlap, must stay
@@ -189,7 +189,7 @@ def _run_once(dsn: str, pipelines_dir: Any) -> Any:
 
 
 def test_a_failed_dirty_mark_fails_the_command(tmp_path, postgres_dsn):
-    # Architecture review finding 8: incremental transform only rebuilds
+    # Incremental transform only rebuilds
     # what issue_dirty lists, so a swallowed failure here meant those issues
     # were silently never rebuilt.
     with (

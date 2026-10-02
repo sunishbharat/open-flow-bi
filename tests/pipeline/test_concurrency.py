@@ -1,14 +1,14 @@
-"""M7.4 concurrency proof (docs/phase2-postgres-design.md §6/§11).
+"""Concurrency proof for loads from several projects at once.
 
 `test_concurrent_projects` is "the one that would have caught dlt#4297" —
 two projects, loaded into the same Postgres database at the same time, must
 not collide on a shared staging dataset (the per-project
 `staging_dataset_name_layout` in pipeline/run.py) or interleave badly under
 the advisory lock (pipeline/locks.py). Real Postgres via
-`testcontainers[postgres]`, not the docker-compose stack (§11: "so CI needs
-no fixture wiring"); mocked Jira HTTP at the `_search_pages` boundary — the
-same pattern test_run.py's mocked tests use, required by the M6
-dlt-worker-thread/vcrpy finding (no cassette use anywhere near the load
+`testcontainers[postgres]`, not the docker-compose stack, so CI needs no
+fixture wiring; mocked Jira HTTP at the `_search_pages` boundary — the same
+pattern test_run.py's mocked tests use, because dlt's worker-thread teardown
+races vcrpy's cassette patching (no cassette use anywhere near the load
 layer).
 
 Needs Docker; excluded from the default `pytest` run (see the `postgres`
@@ -110,23 +110,20 @@ def test_concurrent_projects(postgres_dsn: str, tmp_path: Any) -> None:
                 # Without this, dlt falls back to its real host-local
                 # ~/.dlt/pipelines/ directory, shared and NOT reset between
                 # runs (unlike `postgres_dsn`'s fresh testcontainers
-                # container). issues is incremental (M5): a second real
+                # container). issues is incremental: a second real
                 # execution of this test on the same machine, with the
                 # per-project pipeline_name's local watermark left over from
                 # the first, then filters out every row as "already seen"
                 # via dlt's own incremental dedup - mimicking exactly the
                 # symptom this test exists to catch (rows missing after a
-                # concurrent run) for a completely unrelated reason. Found
-                # while investigating a spurious failure in an M7.5 session
-                # (see docs/session-status-2026-09-18.md's M7.5 section) -
-                # the staging-dataset/advisory-lock protection itself was
-                # never actually broken.
+                # concurrent run) for a completely unrelated reason, while
+                # the staging-dataset/advisory-lock protection itself works.
                 pipelines_dir=str(tmp_path / ".dlt"),
             )
         except BaseException as exc:  # noqa: BLE001 - surfaced via `errors`, not swallowed
             errors.append(exc)
 
-    # Architecture review finding 7: extraction overlaps across projects (the
+    # Extraction overlaps across projects (the
     # barrier above), and only the load step is serialized (these spans).
     load_spans: list[tuple[float, float]] = []
     real_load = dlt.Pipeline.load
@@ -165,7 +162,7 @@ def test_concurrent_projects(postgres_dsn: str, tmp_path: Any) -> None:
             sa.text("SELECT count(*) FROM jira_raw.issues WHERE instance_id = :iid"),
             {"iid": INSTANCE_ID},
         ).scalar_one()
-        # §6's proof: nothing lost (dlt#4297's TRUNCATE race silently drops
+        # The proof: nothing lost (dlt#4297's TRUNCATE race silently drops
         # rows) and nothing duplicated (its INSERT race silently doubles
         # them) when two projects' staging tables would otherwise collide.
         assert total == len(PROJECTS) * ROWS_PER_PROJECT

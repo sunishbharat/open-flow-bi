@@ -8,9 +8,9 @@ dependencies = [
     "alembic>=1.20.0",
     # duckdb (local Parquet inspection) and filesystem (s3fs/botocore, cloud buckets
     # only - local Parquet output needs just fsspec, a core dlt dependency) are
-    # dev-only, so the runtime image stays small. docs/deployment-cf.md §3.3.
+    # dev-only, so the runtime image stays small.
     "dlt[parquet,postgres]>=1.30.0",
-    # Imported at runtime by cli.py and quality/checks.py (docs/deployment-cf.md §3.1);
+    # Imported at runtime by cli.py and quality/checks.py;
     # narwhals is what pandera.pyarrow imports underneath.
     "narwhals>=2.26.0",
     "pandera>=0.33.1",
@@ -50,7 +50,7 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 addopts = "--record-mode=none -m \"not postgres\""
 markers = [
-    "postgres: needs a real Postgres via testcontainers/Docker - excluded from the default (zero-network) run, see M7.4",
+    "postgres: needs a real Postgres via testcontainers/Docker - excluded from the default (zero-network) run",
 ]
 
 [dependency-groups]

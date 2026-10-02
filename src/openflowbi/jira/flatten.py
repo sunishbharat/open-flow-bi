@@ -13,7 +13,7 @@ def _instant(value: str | None) -> pendulum.DateTime | None:
     `updated_at` is the dlt incremental cursor, and dlt compares cursor values
     with plain `max()`: over raw strings that is a lexical compare, so
     `...02:10+0100` (01:10Z) sorts below `...02:30+0200` (00:30Z) and a
-    genuinely newer update is dropped (architecture review finding 1).
+    genuinely newer update is dropped.
     """
     if value is None:
         return None
@@ -33,7 +33,7 @@ def fields(raw_fields: Iterable[Field], instance_id: str) -> Iterator[dict[str, 
     early return; see tests/pipeline/test_run.py's fields-resource tests for
     the actually-reliable way to exercise the dlt wrapper end-to-end.
 
-    instance_id (docs/phase2-postgres-design.md §7): part of the compound
+    instance_id: part of the compound
     primary key so the same field id from two different Jira instances never
     collides.
     """
@@ -57,10 +57,10 @@ def issues(raw_issues: Iterable[dict[str, Any]], instance_id: str) -> Iterator[d
     interval-building needs `created_at` to seed the first status interval,
     since the changelog only records transitions, not the initial state.
 
-    instance_id (docs/phase2-postgres-design.md §7): part of the compound
+    instance_id: part of the compound
     primary key, first column of every row. issue_id is cast to int here —
     Jira's JSON always carries it as a numeric string, but the Postgres
-    column is bigint (§3), so the cast belongs in this pure layer rather than
+    column is bigint, so the cast belongs in this pure layer rather than
     relying on a destination to infer it.
     """
     for issue in raw_issues:
@@ -88,11 +88,11 @@ def changelog(
     re-order would silently duplicate rows on re-ingest. field_id is often
     null for system fields; that is normal, not a parse failure.
 
-    instance_id (docs/phase2-postgres-design.md §7): part of the compound
+    instance_id: part of the compound
     primary key. issue_id is cast to int to match flatten.issues() — same
     numeric-string-in-JSON, bigint-in-Postgres reasoning.
 
-    issue_updated (M7.5, docs/phase2-postgres-design.md §14): an optional
+    issue_updated: an optional
     {raw issue_id (str) -> the issue's own `fields.updated`} map, stamped
     onto every row as `updated_at` — distinct from `created_at` below, which
     is the *history* entry's created timestamp, not the issue's. This is what
@@ -146,7 +146,7 @@ def changelog_status(
     Pure, like changelog() above. The item rows can't carry this: an issue
     with no histories (never transitioned, or the per-issue tier unavailable)
     has no item row, so an incomplete extraction looked exactly like a
-    complete one with nothing in it (architecture review finding 4).
+    complete one with nothing in it.
     `updated_at` is the issue's `fields.updated` at extraction time: the
     transform only trusts a changelog extracted for the issue's current
     version, and it is also the resource's incremental cursor.

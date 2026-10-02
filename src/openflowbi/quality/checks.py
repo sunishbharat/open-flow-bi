@@ -17,26 +17,24 @@ import pyarrow
 
 ISSUES_SCHEMA = pa.DataFrameSchema(
     {
-        # Phase 2 (docs/phase2-postgres-design.md §3/§7): part of the
-        # compound primary key so the same issue_id from two Jira instances
+        # Part of the compound primary key so the same issue_id from two Jira instances
         # never collides.
         "instance_id": pa.Column(pyarrow.string(), nullable=False),
-        # bigint, not string, from M7.2 on — flatten.issues() casts the
-        # numeric-string-in-JSON id to int (§3's table shape). Existing
-        # Parquet predating M7.2 is not migrated (§1); re-extract.
+        # bigint, not string: flatten.issues() casts the numeric-string-in-JSON
+        # id to int. Parquet written before that cast isn't migrated;
+        # re-extract it.
         "issue_id": pa.Column(pyarrow.int64(), nullable=False),
         "issue_key": pa.Column(pyarrow.string(), nullable=True),
         # flatten.issues() yields these as passthrough ISO strings, but dlt's
         # own normalizer detects the ISO shape at load time and casts them to
         # a real timestamp column in Parquet - confirmed against a live
-        # extract, not assumed (trust the response, update
-        # the docs). Checking pyarrow.string() here silently failed against
+        # extract, not assumed. Checking pyarrow.string() here silently failed against
         # every real extract.
         "created_at": pa.Column(pyarrow.timestamp("us", tz="UTC"), nullable=False),
         "updated_at": pa.Column(pyarrow.timestamp("us", tz="UTC"), nullable=True),
     },
     # issue_id is the only identity, scoped per instance
-    # (P2-D2 — primary keys must include instance_id).
+    # (primary keys must include instance_id).
     unique=["instance_id", "issue_id"],
     strict=False,  # `fields` (passthrough JSON) and dlt's own _dlt_* columns ride along
 )
@@ -55,11 +53,11 @@ CHANGELOG_SCHEMA = pa.DataFrameSchema(
             checks=pa.Check.isin(["expand", "bulkfetch", "per_issue"]),
         ),
         "changelog_complete": pa.Column(pyarrow.bool_(), nullable=False),
-        # M7.5 (docs/phase2-postgres-design.md §14): the issue's own
+        # The issue's own
         # `fields.updated`, not the history row's `created_at` below — this
         # is what pipeline/source.py's issue_changelog resource uses as its
         # incremental cursor. required=False so Parquet from before this
-        # milestone (column doesn't exist yet) still validates.
+        # column existed still validates.
         "updated_at": pa.Column(
             pyarrow.timestamp("us", tz="UTC"), nullable=True, required=False
         ),

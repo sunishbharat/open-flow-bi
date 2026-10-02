@@ -1,14 +1,14 @@
 """Postgres advisory lock around the dlt load step.
 
-docs/phase2-postgres-design.md §6(b): belt-and-braces against dlt's
-shared-staging-dataset TRUNCATE/INSERT race (dlt#4297) while dlt's own
-`merge_scope_by_load_id` fix is still opt-in/unreleased. The per-pipeline
-staging dataset (§6(a), pipeline/run.py's `staging_dataset_name_layout`)
+Belt-and-braces against dlt's shared-staging-dataset TRUNCATE/INSERT race
+(dlt#4297) while dlt's own `merge_scope_by_load_id` fix is still
+opt-in/unreleased. The per-pipeline staging dataset (pipeline/run.py's
+`staging_dataset_name_layout`)
 already prevents the collision on its own; this lock is a second,
 independent guard against the same failure mode, serializing only the load
 step — extraction (the quota-bound, expensive part) stays fully parallel.
 
-SQLAlchemy Core, not the ORM (library decision register) — arrives
+SQLAlchemy Core, not the ORM — arrives
 free with Alembic, no new dependency.
 """
 
@@ -26,7 +26,7 @@ logger = structlog.get_logger(__name__)
 LOCK_KEY = 8_314_159
 
 # Held by `flowbi transform` for its whole run, incremental pass and
-# rebuild-queue drain alike (architecture review finding 15).
+# rebuild-queue drain alike, so overlapping runs take turns.
 TRANSFORM_LOCK_KEY = 8_314_160
 
 
@@ -63,8 +63,7 @@ def advisory_lock(dsn: str, key: int) -> Iterator[None]:
                     conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": key})
                 except DBAPIError:
                     # The connection dropped, which released a session lock
-                    # already. Raising here would fail a load that committed
-                    # (architecture review finding 7).
+                    # already. Raising here would fail a load that committed.
                     logger.warning("advisory_unlock_failed", key=key, exc_info=True)
     finally:
         engine.dispose()

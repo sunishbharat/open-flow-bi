@@ -1,24 +1,22 @@
--- flowbi_ops / jira_raw / analytics roles and ownership (docs/phase2-postgres-design.md §10).
+-- flowbi_ops / jira_raw / analytics roles and ownership.
 --
 -- Not an Alembic migration: role creation needs superuser and is an
 -- operator action, run by hand per environment (local docker-compose, or the
--- target Postgres instance in whatever deployment eventually hosts it —
--- Cloud Foundry manifests are out of scope for now).
+-- target Postgres instance in whatever deployment eventually hosts it).
 --
 -- Run as a superuser (e.g. the docker-compose `flowbi` bootstrap user):
 --   psql "$FLOWBI_POSTGRES_DSN" -v writer_pw=plaintext_pw -v reader_pw=plaintext_pw -f migrations/sql/roles.sql
 --
--- Found running this live (2026-09-20): do NOT wrap the -v value in its own
--- single quotes (-v reader_pw="'...'"). This script's `PASSWORD :'reader_pw'`
+-- Do NOT wrap the -v value in its own single quotes (-v reader_pw="'...'").
+-- This script's `PASSWORD :'reader_pw'`
 -- already asks psql to quote the substituted value — quoting it again at the
 -- shell level bakes literal quote characters into the password itself.
 --
--- Safe to re-run, and re-run it after anything the superuser created in
--- these schemas: an `alembic upgrade` or `flowbi extract` run as the
--- superuser leaves tables flowbi_writer does not own (architecture review
--- finding 12). Better still, once this has run, point FLOWBI_POSTGRES_DSN at
--- flowbi_writer for Alembic, extraction and transform alike, so it owns
--- everything it creates.
+-- Safe to re-run, and re-run it after anything the superuser created in these
+-- schemas: an `alembic upgrade` or `flowbi extract` run as the superuser
+-- leaves tables flowbi_writer does not own. Better still, once this has run,
+-- point FLOWBI_POSTGRES_DSN at flowbi_writer for Alembic, extraction and
+-- transform alike, so it owns everything it creates.
 --
 -- `\gexec` runs each row a query returns as a statement: psql variables
 -- don't expand inside a DO $$ ... $$ block, and object names from the
@@ -42,7 +40,7 @@ CREATE SCHEMA IF NOT EXISTS jira_raw AUTHORIZATION flowbi_writer;
 CREATE SCHEMA IF NOT EXISTS flowbi_ops AUTHORIZATION flowbi_writer;
 CREATE SCHEMA IF NOT EXISTS analytics AUTHORIZATION flowbi_writer;
 
--- Staging schemas (jira_raw_staging_<project>, §6) are created by dlt at
+-- Staging schemas (jira_raw_staging_<project>) are created by dlt at
 -- runtime, one per pipeline: the writer needs CREATE on the database.
 SELECT format('GRANT CREATE ON DATABASE %I TO flowbi_writer', current_database()) \gexec
 
@@ -67,7 +65,7 @@ WHERE c.relkind IN ('r', 'p', 'v', 'm')
        OR n.nspname LIKE 'jira\_raw\_staging\_%')
   AND pg_get_userbyid(c.relowner) <> 'flowbi_writer' \gexec
 
--- cube_reader: read-only, analytics only (Phase 4 P4-D1). Deliberately no
+-- cube_reader: read-only, analytics only. Deliberately no
 -- grant on flowbi_ops, and jira_raw only through cube_reader_grants.sql's
 -- two tables: a bug in a future row-level-security policy on `analytics`
 -- can never become a full dump of the raw extracted data.

@@ -5,12 +5,13 @@ services:
       POSTGRES_DB: openflowbi
       POSTGRES_USER: flowbi
       POSTGRES_PASSWORD: flowbi
-    # Host port 5433, not 5432: this machine already runs an unrelated
-    # postgres container (jira-postgres) on 5432 for a different project.
-    ports: ["5433:5432"]
+    # Host port 5433 avoids clashing with a local Postgres on 5432. Every
+    # published port is bound to 127.0.0.1: this stack is for one user on one
+    # machine, with fixed local passwords and Cube in dev mode.
+    ports: ["127.0.0.1:5433:5432"]
     # Named volume: without it the data lives in an anonymous volume tied to one
     # container, and `docker compose down` + `up` silently starts an empty
-    # database (found 2026-10-01: the KAFKA data was orphaned that way).
+    # database.
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -23,14 +24,14 @@ services:
       # during this window don't count, so dependents don't give up too early.
       start_period: 30s
 
-  # docs/phase4-cube-dashboard-design.md §5/P4-D2. Local dev only — Cube
-  # Store (pre-aggregations) intentionally not added here; nothing in the
-  # fast-path model needs it yet.
+  # Semantic layer over Postgres. Local dev only — Cube Store
+  # (pre-aggregations) intentionally not added here; nothing in the model
+  # needs it yet. Pinned: bump deliberately, then re-run the cube-smoke CI job.
   cube:
-    image: cubejs/cube:latest
+    image: cubejs/cube:v1.7.48
     ports:
-      - "4000:4000"     # REST API + Playground
-      - "15432:15432"   # Postgres-wire SQL API — what Superset connects to (M9a.2)
+      - "127.0.0.1:4000:4000"     # REST API + Playground
+      - "127.0.0.1:15432:15432"   # Postgres-wire SQL API — what Superset connects to
     environment:
       CUBEJS_DB_TYPE: postgres
       CUBEJS_DB_HOST: postgres
@@ -38,8 +39,8 @@ services:
       CUBEJS_DB_NAME: openflowbi
       CUBEJS_DB_USER: cube_reader
       CUBEJS_DB_PASS: ${CUBE_READER_PW}
-      # P4-D4: local-only, authentication bypass — never set this outside
-      # docker-compose. See cube/README.md.
+      # Local-only: dev mode is an authentication bypass — never set this
+      # outside docker-compose. See cube/README.md.
       CUBEJS_DEV_MODE: "true"
       # Credentials for the SQL API itself (distinct from CUBEJS_DB_* above,
       # which is Cube's own connection *to* Postgres). Set explicitly rather
@@ -53,37 +54,39 @@ services:
       postgres:
         condition: service_healthy
 
-  # docs/phase4-cube-dashboard-design.md §1/M9a.2. The actual dashboard-
-  # building surface (P4-D5) — Cube's own Playground is dev-only, not this.
-  # SQLite metadata store (default image behavior) is fine for local dev;
+  # The dashboard-building surface — Cube's own Playground is dev-only, not
+  # this. SQLite metadata store (default image behavior) is fine for local dev;
   # revisit if this ever needs to survive a container rebuild for real.
+  # Pinned: bump deliberately.
   superset:
-    image: apache/superset:latest
-    # The image's default user (uid 1000) can't write into /app/.venv, where
-    # the psycopg2-binary driver install below needs to land (found live:
-    # PermissionError installing as the default user). Root, local dev only.
+    image: apache/superset:6.1.0
+    # The Postgres driver is installed at start-up into a named volume, which
+    # Docker creates root-owned, so the image's default user (uid 1000) can't
+    # write to it. Root, local dev only.
     user: root
-    ports: ["8088:8088"]
+    ports: ["127.0.0.1:8088:8088"]
     environment:
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
-      # The driver install below goes through Norton's TLS interception too;
-      # PIP_CERT makes pip trust the same combined bundle the flowbi service
-      # uses (pip only - nothing else in Superset reads it).
+      # Antivirus or a corporate proxy that inspects HTTPS breaks the driver
+      # install below too; PIP_CERT makes pip trust the same combined bundle
+      # the flowbi service uses (pip only - nothing else in Superset reads it).
       PIP_CERT: /certs/ca.pem
+      # The driver lives in its own directory, not the image's site-packages,
+      # so this doesn't depend on the image's Python version, and an image
+      # upgrade isn't shadowed by a volume holding an older site-packages.
+      # /app/pythonpath is the image's own default PYTHONPATH.
+      PYTHONPATH: /app/pythonpath:/app/superset_drivers
     volumes:
       - ${FLOWBI_BUILD_CA_BUNDLE:-./.build-ca.pem}:/certs/ca.pem:ro
       - superset_home:/app/superset_home
-      # Persist the pip-installed driver across container restarts (below)
-      # instead of re-downloading it every `docker compose up` — found live
-      # (2026-09-22) that a plain container restart re-runs the install step
-      # from scratch since /app/.venv isn't otherwise persisted, and this
-      # machine's Norton TLS interception (see docs/session-status-*.md's
-      # blocker section) makes that pip install fail intermittently.
-      - superset_site_packages:/app/.venv/lib/python3.10/site-packages
+      # Persist the pip-installed driver across container restarts instead of
+      # re-downloading it on every `docker compose up`: a re-download needs
+      # pypi.org, and can fail intermittently behind HTTPS inspection.
+      - superset_drivers:/app/superset_drivers
     entrypoint: >
       /bin/bash -c "
-      (test -f /app/.venv/lib/python3.10/site-packages/psycopg2/__init__.py ||
-      pip install --no-cache-dir --target=/app/.venv/lib/python3.10/site-packages psycopg2-binary) &&
+      (test -f /app/superset_drivers/psycopg2/__init__.py ||
+      pip install --no-cache-dir --target=/app/superset_drivers psycopg2-binary) &&
       superset db upgrade &&
       superset fab create-admin --username admin --firstname Admin --lastname Admin --email admin@openflowbi.local --password ${SUPERSET_ADMIN_PW} &&
       superset init &&
@@ -92,9 +95,9 @@ services:
       cube:
         condition: service_started
 
-  # The openflowbi/core image (Dockerfile), for testing the image locally before
-  # Cloud Foundry. Profile-gated: `docker compose up` does not start it. One-off
-  # commands, e.g.:
+  # The openflowbi/core image (Dockerfile), for running the pipeline in a
+  # container against the compose Postgres. Profile-gated: `docker compose up`
+  # does not start it. One-off commands, e.g.:
   #   docker compose run --rm flowbi alembic upgrade head
   #   docker compose run --rm flowbi flowbi extract issues --destination postgres
   flowbi:
@@ -107,8 +110,8 @@ services:
     environment:
       # Inside the compose network Postgres is postgres:5432, not localhost:5433.
       FLOWBI_POSTGRES_DSN: postgresql://flowbi:flowbi@postgres:5432/openflowbi
-      # Norton intercepts HTTPS from containers too, so Jira calls need the same
-      # combined bundle at runtime. Mounted, never baked into the image.
+      # HTTPS inspection applies to container traffic too, so Jira calls need
+      # the same combined bundle at runtime. Mounted, never baked into the image.
       REQUESTS_CA_BUNDLE: /certs/ca.pem
       SSL_CERT_FILE: /certs/ca.pem
     volumes:
@@ -131,4 +134,4 @@ volumes:
   pgdata:
   flowbi_dlt:
   superset_home:
-  superset_site_packages:
+  superset_drivers:

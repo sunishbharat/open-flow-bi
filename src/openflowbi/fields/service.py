@@ -1,9 +1,6 @@
-"""Field-selection service calls — the layer both the CLI and a future UI
-call (docs/phase3-field-selection-design.md §3: "write this once, call it
-twice"). Only `list_fields` exists yet, for 3a.1's acceptance criterion;
-`preview`/`save_selection`/`diff_selection`/`request_rebuild`/`rebuild_status`
-land alongside the milestones that need them (3a.2+) rather than being
-stubbed out now.
+"""Field-selection service calls: the layer both the CLI and a future UI
+call, so the logic is written once. Functions are added when something needs
+them, rather than stubbed out ahead of time.
 """
 
 from dataclasses import dataclass
@@ -100,8 +97,8 @@ def request_rebuild(
     version: int | None = None,
 ) -> int:
     """Queue a full rebuild of promoted columns at `version` (default:
-    latest) - docs/phase3-field-selection-design.md §2.2: "a rebuild takes
-    minutes; a web request must not." Returns the new request_id. The caller
+    latest): a rebuild takes minutes, so callers queue one instead of
+    running it. Returns the new request_id. The caller
     never runs the rebuild itself; `flowbi transform` drains this queue
     (transform/runner.py:drain_rebuild_queue).
     """

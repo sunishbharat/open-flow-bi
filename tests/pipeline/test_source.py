@@ -8,7 +8,7 @@ from openflowbi.pipeline.source import _jql
 
 def test_jql_without_cursor_sorts_by_created():
     # No incremental cursor in play (e.g. a first-ever run, before any
-    # watermark exists) - unchanged from M3/M4 behaviour.
+    # watermark exists).
     assert _jql("KAFKA") == "project = KAFKA order by created asc"
     assert _jql(None) == "order by created asc"
 
@@ -16,7 +16,7 @@ def test_jql_without_cursor_sorts_by_created():
 def test_jql_with_cursor_floors_and_sorts_by_updated():
     # A --limit-truncated run must only ever advance the incremental cursor
     # to the oldest-updated issue it actually fetched, which only holds if
-    # results are walked oldest-updated-first (M5 design note).
+    # results are walked oldest-updated-first.
     jql = _jql("KAFKA", updated_since="2024-01-15 09:30")
     assert jql == 'project = KAFKA and updated >= "2024-01-15 09:30" order by updated asc'
 

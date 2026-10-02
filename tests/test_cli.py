@@ -25,7 +25,7 @@ def _write_issues_parquet(out_dir, issue_ids):
     table = pa.table(
         {
             "instance_id": ["inst-a"] * len(issue_ids),
-            # bigint from M7.2 (docs/phase2-postgres-design.md §3).
+            # bigint, not string.
             "issue_id": pa.array(issue_ids, type=pa.int64()),
             "issue_key": [f"PROJ-{i}" for i in issue_ids],
             "created_at": pa.array([ts] * len(issue_ids), type=timestamp),
@@ -176,7 +176,7 @@ def _extract_limit(monkeypatch, *args):
 
 
 def test_limit_zero_walks_everything_and_the_default_stays_bounded(monkeypatch):
-    # Architecture review finding 9: a scheduled full run needs an explicit
+    # A scheduled full run needs an explicit
     # unbounded mode instead of a "large enough" number that silently caps it.
     assert _extract_limit(monkeypatch, "issues", "--limit", "0") is None
     assert _extract_limit(monkeypatch, "changelog", "--limit", "0") is None

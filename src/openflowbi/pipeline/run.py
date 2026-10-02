@@ -21,11 +21,11 @@ def _slug(value: str) -> str:
 
 
 def pipeline_name(instance_id: str, project: str | None) -> str:
-    """One dlt pipeline per (instance, project) — docs/phase2-postgres-design.md
-    P2-D3. Isolates incremental watermarks (and, for Postgres, staging
-    datasets — see the `staging_dataset_name_layout` use below) between
-    projects that would otherwise share one local `.dlt` state directory or
-    one physical Postgres staging table. Noted as a gap in M7.1, fixed here.
+    """One dlt pipeline per (instance, project). Isolates incremental
+    watermarks (and, for Postgres, staging datasets — see the
+    `staging_dataset_name_layout` use below) between projects that would
+    otherwise share one local `.dlt` state directory or one physical
+    Postgres staging table.
     """
     return f"openflowbi_{_slug(instance_id)}_{_slug(project or 'all')}"
 
@@ -36,12 +36,12 @@ _CURSOR_STATE_KEYS = ("initial_value", "start_value", "last_value")
 def _migrate_string_cursors(pipeline: Any) -> None:
     """Convert `updated_at` cursors stored as strings into aware datetimes.
 
-    Before architecture review finding 1, the cursor was Jira's raw
-    `updated` string. dlt cannot compare a stored string with the datetime
-    rows it gets now (TypeError at extract), so every pipeline that ran
-    before the fix needs its state converted once. The caller syncs
-    destination state first, so a fresh container (no local `.dlt`) is
-    migrated too.
+    Older versions stored the cursor as Jira's raw `updated` string, which
+    compares lexically rather than as an instant. dlt cannot compare a stored
+    string with the datetime rows it gets now (TypeError at extract), so
+    every pipeline that ran before the fix needs its state converted once.
+    The caller syncs destination state first, so a fresh container (no local
+    `.dlt`) is migrated too.
     """
     with pipeline.managed_state() as state:
         resources = state.get("sources", {}).get("jira", {}).get("resources", {})
@@ -59,8 +59,7 @@ def _reset_watermarks(pipeline: Any, resources: tuple[str, ...]) -> None:
     the configured incremental start again.
 
     The way to backfill `issue_changelog_status` rows for issues whose
-    changelog was extracted before that table existed (architecture review
-    finding 4's upgrade note): `transform` skips those issues until a fresh
+    changelog was extracted before that table existed: `transform` skips those issues until a fresh
     extraction records them as complete. Called after `sync_destination()`,
     so it also resets a watermark that only the destination holds. The
     reset is written to local state immediately and to the destination with
@@ -90,23 +89,21 @@ def run(
         pipeline_kwargs["pipelines_dir"] = pipelines_dir
 
     if destination == "postgres":
-        # M7.1 (docs/phase2-postgres-design.md §4.2): the destination is one
-        # dlt string swap, per the library-first rule — no
+        # The destination is one dlt string swap, per the library-first rule — no
         # hand-written writer.
         if not postgres_dsn:
             raise ValueError("FLOWBI_POSTGRES_DSN is required for --destination postgres")
         dest: Any = dlt.destinations.postgres(
             credentials=postgres_dsn,
-            # M7.4 (§6a): a per-project staging dataset, so two projects
+            # A per-project staging dataset, so two projects
             # loading concurrently never share one physical staging table
             # (dlt#4297's TRUNCATE/INSERT race). "%s" is dlt's own
             # placeholder for dataset_name ("jira_raw" below) — this becomes
             # e.g. "jira_raw_staging_kafka".
             staging_dataset_name_layout=f"%s_staging_{_slug(project or 'all')}",
         )
-        # csv is materially faster than the insert_values default for a
-        # backfill (§4.2) — not yet measured against a real project (open
-        # question #2), kept as the doc's stated default.
+        # csv is expected to be materially faster than the insert_values
+        # default for a backfill. Not yet measured against a real project.
         loader_file_format = "csv"
     else:
         # Default layout ({table_name}/{load_id}.{file_id}.{ext}): dlt only
@@ -149,10 +146,10 @@ def run(
         assert postgres_dsn  # validated above
         dsn = postgres_dsn
 
-        # M7.4 (§6b): belt-and-braces around the per-project staging dataset
+        # Belt-and-braces around the per-project staging dataset
         # above, while dlt's own merge_scope_by_load_id fix is still
         # opt-in/unreleased. Held around pipeline.load() only, never extract
-        # or normalize (architecture review finding 7): extraction is the
+        # or normalize: extraction is the
         # slow, quota-bound part and stays parallel across projects, and the
         # lock's connection is never left idle for the length of a backfill.
         def lock() -> AbstractContextManager[None]:
@@ -172,11 +169,9 @@ def run(
     pipeline.extract(
         source,
         loader_file_format=loader_file_format,
-        # P2-D4 (docs/phase2-postgres-design.md §2/§4.2): new tables/columns
-        # (e.g. a new custom field) must not break a load, but a column
-        # silently changing type should — that is exactly the class of bug
-        # M7.2's issue_id string->bigint change needs to be protected against
-        # from here on.
+        # New tables/columns (e.g. a new custom field) must not break a load,
+        # but a column silently changing type should, such as issue_id
+        # drifting from bigint back to a string.
         schema_contract={"tables": "evolve", "columns": "evolve", "data_type": "freeze"},
     )
     # normalize() and load() also pick up packages a killed run left
@@ -195,10 +190,10 @@ class DirtyMarkError(RuntimeError):
 def _mark_dirty(
     info: Any, postgres_dsn: str, instance_id: str, resources: tuple[str, ...]
 ) -> None:
-    """M7.5 (docs/phase2-postgres-design.md §8): queue the loaded issues in
+    """Queue the loaded issues in
     flowbi_ops.issue_dirty for the next incremental `flowbi transform`.
 
-    Not best-effort any more (architecture review finding 8): incremental
+    Not best-effort: incremental
     transform is driven entirely by issue_dirty, so a silently failed mark
     means those issues are never rebuilt. A failure fails the command. The
     load has already committed and the watermark moved past these issues,

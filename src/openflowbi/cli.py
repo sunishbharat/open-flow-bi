@@ -34,10 +34,10 @@ logger = structlog.get_logger(__name__)
 
 # Some real Jira field names carry non-ASCII characters (e.g. Jira's built-in
 # aggregate-progress fields, whose display name starts with a Greek sigma)
-# that a legacy Windows console's cp1252 codepage can't encode - found live
-# while printing `flowbi fields list` (UnicodeEncodeError crashed the whole
-# table mid-render). Degrade to '?' instead of crashing; this only affects
-# terminal display, never stored data.
+# that a legacy Windows console's cp1252 codepage can't encode: printing
+# `flowbi fields list` would crash mid-table with a UnicodeEncodeError.
+# Degrade to '?' instead of crashing; this only affects terminal display,
+# never stored data.
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(errors="replace")
@@ -45,7 +45,7 @@ for _stream in (sys.stdout, sys.stderr):
 app = typer.Typer(help="flowbi — Jira flow-metrics extractor")
 extract_app = typer.Typer(help="Extract Jira data")
 quality_app = typer.Typer(help="Validate extracted Parquet against pandera contracts")
-fields_app = typer.Typer(help="Discover Jira custom fields and their fill rates (Phase 3a)")
+fields_app = typer.Typer(help="Discover Jira custom fields and their fill rates")
 app.add_typer(extract_app, name="extract")
 app.add_typer(quality_app, name="quality")
 app.add_typer(fields_app, name="fields")
@@ -63,7 +63,7 @@ configure_logging()
 # Project rule: every command that walks Jira data honours --limit — a
 # debug run must never walk a whole project by accident. Defined once, reused
 # by every extract subcommand so it can't be forgotten on a new one.
-# `--limit 0` walks everything (architecture review finding 9): a full run
+# `--limit 0` walks everything: a full run
 # still has to be asked for explicitly, so the rule holds, but a scheduled
 # task no longer has to guess a "large enough" number that silently caps it.
 LimitOption = Annotated[
@@ -153,19 +153,19 @@ def doctor() -> None:
     console.print(table)
 
 
-SinkOption = Annotated[str, typer.Option(help="table (terminal preview) - filesystem lands in M3")]
+SinkOption = Annotated[str, typer.Option(help="table (terminal preview; the only sink supported)")]
 
 
 @extract_app.command("fields")
 def extract_fields(sink: SinkOption = "table", limit: LimitOption = 20) -> None:
-    """Preview Jira field definitions. Does not touch a dlt destination (see M2 notes)."""
+    """Preview Jira field definitions. Does not touch a dlt destination."""
     if sink != "table":
-        raise typer.BadParameter("Only --sink table is supported until M3 adds a filesystem sink")
+        raise typer.BadParameter("Only --sink table is supported")
 
     profile = _resolve_profile()
     # Calls fields.fetch() + flatten.fields() directly rather than going
     # through jira_source()'s dlt-resource wrapper: this preview never
-    # touches a dlt destination (M2 note above), and dlt's DltResource.
+    # touches a dlt destination, and dlt's DltResource.
     # __iter__ always spins up a ManagedPipeIterator worker thread even for
     # a single already-fetched HTTP response - unnecessary weight for a
     # terminal preview, and one that pipeline_run.run() (used by the other
@@ -268,7 +268,7 @@ def quality_check(
     filesystem (default): pandera row-shape check against Parquet under
     out_dir. postgres: whole-table SQL invariants (quality/sql_checks.py) -
     pandera on a sample can't answer "is this unique across the whole table"
-    the way the database can (docs/phase2-postgres-design.md §9). Either way
+    the way the database can. Either way
     the verdict is recorded as a flowbi_ops.sync_run row.
     """
     if table not in TABLE_VALIDATORS:
@@ -328,7 +328,7 @@ def _quality_check_postgres(table: str) -> None:
             finished_at=finished_at,
             error=error,
         )
-    except Exception:  # noqa: BLE001 - best-effort bookkeeping; nothing reads sync_run yet (finding 16)
+    except Exception:  # noqa: BLE001 - best-effort bookkeeping; nothing reads sync_run yet
         logger.warning("sync_run_write_failed", table=table, exc_info=True)
 
     if not result.passed:
@@ -360,8 +360,7 @@ def _resolve_instance_id(settings: Settings) -> str:
 
 
 def _cli_actor() -> str:
-    # §2.1: created_by is "from the JWT, or 'cli:<os user>'" - no JWT exists
-    # until 3b's admin UI, so every 3a.2 write is attributed this way.
+    # created_by for CLI writes: there's no signed-in user, so the OS user.
     try:
         return f"cli:{getpass.getuser()}"
     except Exception:  # noqa: BLE001 - getuser() can fail with no controlling terminal/env
@@ -480,7 +479,7 @@ def fields_promote(
 ) -> None:
     """Promote a field: select it for a real column/bridge table in analytics.issue.
 
-    Writes a new field_selection version (§2.1: append-only, never in place)
+    Writes a new field_selection version (append-only, never in place)
     and queues a full rebuild of it, which the next `flowbi transform` runs.
     """
     settings = Settings()  # type: ignore[call-arg]  # required fields resolved from env at runtime
@@ -507,7 +506,7 @@ def fields_demote(
 ) -> None:
     """Demote a field: stop treating it as selected.
 
-    Never drops the underlying column (design doc §10 rule 1) - just stamps
+    Never drops the underlying column, since a dashboard may still use it - just stamps
     deprecated_at in a new version. Fails clearly if the field was never
     promoted in the first place.
     """
@@ -530,7 +529,7 @@ def fields_export(
     instance_id = _resolve_instance_id(settings)
     text = selection.export_yaml(dsn, instance_id, version=version)
     # typer.echo, not console.print: this output is meant to be redirected to
-    # a file (README: `flowbi fields export > config/fields.yml`) - rich
+    # a file (docs/cli.md: `flowbi fields export > fields.yml`) - rich
     # would wrap it in box-drawing characters that aren't valid YAML.
     typer.echo(text, nl=False)
 
@@ -558,11 +557,11 @@ def fields_request_rebuild(
         int | None, typer.Option("--version", help="field_selection version - default: latest")
     ] = None,
 ) -> None:
-    """Queue a full rebuild of promoted columns (Phase 3a.5).
+    """Queue a full rebuild of promoted columns.
 
     Writes a flowbi_ops.rebuild_request row and returns immediately - a
     rebuild takes minutes, this call doesn't. `flowbi transform` drains the
-    queue. This is the CLI's stand-in for 3b's "Save & rebuild" button.
+    queue.
     """
     settings = Settings()  # type: ignore[call-arg]  # required fields resolved from env at runtime
     dsn = _require_postgres_dsn(settings)
@@ -584,8 +583,7 @@ def transform(
     project: ProjectOption = None,
 ) -> None:
     """Rebuild analytics.issue_status_interval and analytics.issue's promoted
-    columns (Phase 3a.3/3a.4), then drain flowbi_ops.rebuild_request
-    (Phase 3a.5).
+    columns, then drain flowbi_ops.rebuild_request.
 
     Default: incremental, driven by flowbi_ops.issue_dirty (claim-by-delete,
     so a crash re-queues nothing twice). --rebuild-all: the same SQL models

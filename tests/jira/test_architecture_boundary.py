@@ -2,8 +2,7 @@
 database, no filesystem. It speaks HTTP and returns plain objects.
 
 Scans every .py file under jira/ at test time, so this stays enforced as
-fields.py / changelog.py / flatten.py are added in later milestones without
-needing manual updates here.
+new modules are added under jira/ without needing manual updates here.
 """
 
 import ast

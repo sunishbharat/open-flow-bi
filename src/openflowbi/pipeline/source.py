@@ -27,15 +27,14 @@ PAGE_SIZE = 50
 DC_PAGE_OVERLAP = 10
 
 # Epoch: an unconfigured incremental start means "extract everything" on the
-# first run, matching M3/M4's prior plain-full-pass behaviour.
+# first run.
 DEFAULT_INCREMENTAL_START = "1970-01-01T00:00:00.000+0000"
 
-# Every incremental run re-reads the last hour before its watermark
-# (open-flow-bi-repo-structure_1.md §0). Cloud search is an eventually
+# Every incremental run re-reads the last hour before its watermark. Cloud search is an eventually
 # consistent index, so an issue can become searchable after the run that
 # passed its `updated` time. Widening the JQL floor alone would not help:
 # dlt also drops every row below the stored last_value, so the overlap has
-# to be dlt's own `lag`, which lowers both (architecture review finding 2).
+# to be dlt's own `lag`, which lowers both.
 OVERLAP_SECONDS = 3600
 
 # Per-issue changelog completeness (flatten.changelog_status) is a table of
@@ -64,7 +63,7 @@ def _jql(project: str | None, updated_since: str | None = None) -> str:
     a --limit-truncated run then only ever advances the incremental "last
     value" to the oldest-updated issue it actually fetched, so a later
     unlimited run resumes from there instead of silently skipping issues that
-    were never walked (M5 design note in the build plan).
+    were never walked.
     """
     clauses = [f"project = {project}"] if project else []
     if updated_since:
@@ -129,12 +128,12 @@ def _dc_search_pages(client: RESTClient, params: dict[str, Any]) -> Iterator[dic
     Only for JQL sorted `updated asc`, which is all the resources use.
     Editing an issue already read moves it to the end of that ordering, so
     every later row shifts left by one and a plain offset walk skips the row
-    at the next page boundary, below the new watermark for good (architecture
-    review finding 3). So each page re-reads DC_PAGE_OVERLAP rows of the
-    previous one. Its first row must be one already yielded, still carrying
-    the `updated` it had then: the rows yielded so far are then all at or
-    before it, so nothing was skipped. If it isn't, more rows than the
-    overlap moved away, and the walk steps further back until it is.
+    at the next page boundary, below the new watermark for good. So each page
+    re-reads DC_PAGE_OVERLAP rows of the previous one. Its first row must be
+    one already yielded, still carrying the `updated` it had then: the rows
+    yielded so far are then all at or before it, so nothing was skipped. If
+    it isn't, more rows than the overlap moved away, and the walk steps
+    further back until it is.
 
     The walk stops at the first issue updated after it began (the first
     response's `Date`, the server's own clock): an issue edited mid-walk is
@@ -197,7 +196,7 @@ class JiraCredentialsError(RuntimeError):
 def _updated_floor(profile: DeploymentProfile, cursor_start: str | datetime) -> str:
     """Resolve an incremental cursor's JQL floor, in the account's timezone.
 
-    Shared by `issues` and `issue_changelog` (M7.5) — both track the same
+    Shared by `issues` and `issue_changelog`: both track the same
     Jira `updated` field, so the account-timezone lookup (and its
     anonymous-access UTC fallback, see the resources below) only needs to
     live in one place.
@@ -218,9 +217,9 @@ def _updated_floor(profile: DeploymentProfile, cursor_start: str | datetime) -> 
                 "same account, and run `flowbi doctor`."
             ) from exc
         # The account timezone should be asserted at startup; doctor
-        # (M1) does that and fails loudly. Here, an unresolvable /myself
-        # (anonymous access or an invalid token - the live Apache Jira
-        # test target in this repo's docs uses a dummy PAT with no real
+        # does that and fails loudly. Here, an unresolvable /myself
+        # (anonymous access or an invalid token - Apache's public Jira,
+        # the default in .env.example, takes a dummy PAT with no real
         # account) must not crash extraction outright, so this degrades
         # to UTC with a warning instead - callers with real credentials
         # never hit this branch.
@@ -245,7 +244,7 @@ def jira_source(
     start = parse_cursor(incremental_start)
 
     # write_disposition="merge" + a compound (instance_id, field_id) key
-    # (docs/phase2-postgres-design.md §4.3) — a plain "replace" would wipe
+    # — a plain "replace" would wipe
     # every other instance's fields sharing this dataset on the next run.
     @dlt.resource(
         name="fields",
@@ -279,7 +278,7 @@ def jira_source(
     ) -> Iterator[dict[str, Any]]:
         # Cursor state persists in the pipeline's durable state (dlt), not a
         # hand-rolled watermark table — resume-after-kill and --limit safety
-        # both fall out of this rather than being written by hand (M5).
+        # both fall out of this rather than being written by hand.
         floor = _updated_floor(profile, updated.start_value)
         yield from flatten.issues(
             _search_pages(profile, _jql(project, updated_since=floor)), profile.instance_id
@@ -291,17 +290,16 @@ def jira_source(
         write_disposition="merge",
     )
     def issue_changelog(
-        # M7.5 (docs/phase2-postgres-design.md §14): incremental off the same
-        # `updated` field as `issues`, tracked via each row's `updated_at`
-        # (flatten.changelog's issue_updated map below) — a separate cursor,
-        # not a literal shared watermark, since the two resources run from
-        # separate CLI commands (`extract issues`/`extract changelog`) and
-        # dlt scopes incremental state per resource regardless. §15 open
-        # question #1 (chaining issue_changelog off issues as a dlt
-        # transformer, to halve the HTTP search cost) is deferred again here
-        # for the same reason noted since M4/M5: issues' own search doesn't
-        # request expand=changelog, so chaining wouldn't save a request
-        # unless `issues` always paid for changelog data most runs don't need.
+        # Incremental off the same `updated` field as `issues`, tracked via
+        # each row's `updated_at` (flatten.changelog's issue_updated map
+        # below) — a separate cursor, not a literal shared watermark, since
+        # the two resources run from separate CLI commands (`extract
+        # issues`/`extract changelog`) and dlt scopes incremental state per
+        # resource regardless. Chaining issue_changelog off issues as a dlt
+        # transformer, to halve the HTTP search cost, was rejected: issues'
+        # own search doesn't request expand=changelog, so chaining wouldn't
+        # save a request unless `issues` always paid for changelog data most
+        # runs don't need.
         updated: dlt.sources.incremental[pendulum.DateTime] = dlt.sources.incremental(  # noqa: B008
             "updated_at", initial_value=start, lag=OVERLAP_SECONDS
         ),
@@ -335,7 +333,7 @@ def jira_source(
             batches = itertools.islice(batches, changelog_issue_limit)
         # Every issue yields its status row, even with zero histories, so the
         # cursor and issue_dirty see every extracted issue, and the transform
-        # can tell "nothing extracted yet" from "no transitions" (finding 4).
+        # can tell "nothing extracted yet" from "no transitions".
         for batch in batches:
             yield list(flatten.changelog([batch], profile.instance_id, issue_updated))
             yield dlt.mark.with_hints(

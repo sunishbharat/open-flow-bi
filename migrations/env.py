@@ -26,7 +26,7 @@ class MigrationSettings(BaseSettings):
     postgres_dsn: str | None = None
 
 
-# Single user-facing DSN surface (docs/phase2-postgres-design.md §4.4) — the
+# Single user-facing DSN surface — the
 # same FLOWBI_POSTGRES_DSN pipeline/run.py hands to dlt, not a second URL
 # living only in alembic.ini.
 settings = MigrationSettings()
@@ -34,13 +34,13 @@ if not settings.postgres_dsn:
     raise RuntimeError("FLOWBI_POSTGRES_DSN is required to run Alembic migrations")
 config.set_main_option("sqlalchemy.url", settings.postgres_dsn)
 
-# P2-D1 (docs/phase2-postgres-design.md §2/§5): Alembic owns flowbi_ops. It
+# Alembic owns flowbi_ops. It
 # must be blind to jira_raw — dlt reconciles that schema against its own
 # stored schema on every run, and an out-of-band ALTER TABLE from Alembic
 # would make dlt's schema and the database disagree.
 #
 # `analytics` is Alembic-*created* (migrations/versions/c44c33c8584c) but,
-# since Phase 3a, no longer Alembic-*compared*: analytics.issue's promoted
+# not Alembic-*compared*: analytics.issue's promoted
 # columns and transform/runner.py's dynamically-created bridge tables
 # (src/openflowbi/ops/analytics_tables.py's own docstring) are runtime-managed,
 # not migration-managed, for exactly the same reason jira_raw is excluded —
@@ -127,8 +127,8 @@ def run_migrations_online() -> None:
             include_schemas=True,
             include_name=include_name,
             include_object=include_object,
-            # Keeps alembic_version out of `public` (docs/phase2-postgres-design.md
-            # §5) — nobody is tempted to put anything there.
+            # Keeps alembic_version out of `public`, so nobody is tempted to
+            # put anything there.
             version_table_schema="flowbi_ops",
         )
 

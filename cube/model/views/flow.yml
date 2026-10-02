@@ -1,8 +1,8 @@
 views:
   - name: flow
     description: >
-      Fast-path view over raw Jira issues (docs/phase4-cube-dashboard-design.md).
-      What a Superset user picks first — not the raw `issues` cube directly.
+      Jira issues with their status history and promoted fields.
+      What a Superset user picks — not the raw cubes directly.
     cubes:
       - join_path: issues
         includes:
@@ -15,11 +15,8 @@ views:
           - updated_at
           - count
 
-      # Phase 3a is done (docs/phase3-field-selection-design.md 3a.3/3a.4) —
-      # analytics.issue_status_interval exists, built by `flowbi transform`.
-      # No existing Superset chart built against this view needed to change,
-      # only this file (docs/phase4-cube-dashboard-design.md §2's "the shape
-      # doesn't change" claim).
+      # Status periods from analytics.issue_status_interval, built by
+      # `flowbi transform`.
       #
       # status_name is aliased: `issues.status_name` (above) is the issue's
       # *current* status; this cube's status_name is whichever status a given
@@ -27,7 +24,7 @@ views:
       # different things that happen to share a name across cubes. Cube's
       # view compiler rejects the collision outright ("Included member
       # 'status_name' conflicts with existing member of 'flow'") rather than
-      # silently picking one, found live wiring this up in Superset.
+      # silently picking one.
       - join_path: issues.issue_status_interval
         includes:
           - name: status_name
@@ -37,24 +34,21 @@ views:
           - total_duration_seconds
           - avg_duration_days
 
-      # M9b full path, second cube (docs/phase4-cube-dashboard-design.md
-      # §4.3/§4.4). Add each promoted column here too, alongside its new
-      # dimension in issue.yml, as fields get promoted — resolution_name is
-      # the first real example (2026-09-22).
+      # Promoted columns from analytics.issue. Add each promoted column here
+      # too, alongside its new dimension in issue.yml — resolution_name is
+      # the reference to copy.
       - join_path: issues.issue
         includes:
           - name: rebuilt_at
             alias: issue_rebuilt_at
           - resolution_name
 
-      # Bridge-table cube for array-valued fields (README.md's "Array-valued
-      # fields" subsection) - fix_version.yml, closing the gap the "For
-      # developers" section flagged. `count` and `value` are aliased: this
-      # cube's own `count` measure counts (issue, fix-version) pairs, not
-      # issues (an issue with 3 fix versions counts 3 times here) - a
-      # different meaning from the top-level `count` above, so the view
-      # compiler's name-collision rule (same one that forced
-      # interval_status_name below) applies here too.
+      # Bridge-table cube for an array-valued field (fix_version.yml). `count`
+      # and `value` are aliased: this cube's own `count` measure counts
+      # (issue, fix-version) pairs, not issues (an issue with 3 fix versions
+      # counts 3 times here) - a different meaning from the top-level `count`
+      # above, so the view compiler's name-collision rule (same one that
+      # forced interval_status_name above) applies here too.
       - join_path: issues.fix_version
         includes:
           - name: value

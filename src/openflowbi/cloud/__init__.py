@@ -8,5 +8,5 @@
 Trust roots are deliberately not handled here: requests reads REQUESTS_CA_BUNDLE (set by the
 deployment image) itself, and that env var overrides any explicit `session.verify` anyway.
 
-Deliberately no import-time side effects, unlike the module this strategy is modelled on.
+Deliberately no import-time side effects: the CLI decodes the certificate explicitly.
 """

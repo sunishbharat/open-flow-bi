@@ -1,6 +1,6 @@
 """SQLAlchemy Core table definitions for the `analytics` schema.
 
-Phase 3a.3/3a.4 (docs/phase3-field-selection-design.md §2.3). Only
+Only
 `issue_status_interval` lives here, and only that table — its schema is fully
 fixed. `analytics.issue` is deliberately *not* represented as a Core Table:
 its promoted columns are added at runtime by `transform/runner.py` from the
